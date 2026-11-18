@@ -12,6 +12,16 @@ namespace ByteCommander.Viewer;
 /// </summary>
 public readonly record struct TextMatch(long Row, int Column, int Length, int SpillOver = 0);
 
+/// <summary>Що сталося з файлом з моменту попередньої перевірки (<see cref="IRowSource.Poll"/>).</summary>
+public enum SourceChange
+{
+    Unchanged,
+    /// <summary>Файл дописали — нові рядки дочитуються у фоні (прийде <see cref="IRowSource.RowCountChanged"/>).</summary>
+    Grew,
+    /// <summary>Файл став коротшим (обрізали, ротація логу) — джерело треба створити заново.</summary>
+    Reset,
+}
+
 /// <summary>Джерело рядків для віртуального переглядача: читає з диска лише те, що видно.</summary>
 public interface IRowSource : IDisposable
 {
@@ -19,8 +29,17 @@ public interface IRowSource : IDisposable
     long RowCount { get; }
     bool IsComplete { get; }
     bool ShowLineNumbers { get; }
+    /// <summary>Розмір файлу в байтах, який зараз охоплює джерело.</summary>
+    long Length { get; }
     /// <summary>Викликається з фонового потоку, коли змінилась кількість рядків.</summary>
     event Action? RowCountChanged;
+
+    /// <summary>
+    /// Перевірити файл на диску (для стеження, як «tail -f»): якщо його дописали — дочитати нове.
+    /// Розмір береться з відкритого дескриптора, а не з каталогу: для файлу, який зараз пише інша
+    /// програма, розмір у каталозі оновлюється із запізненням.
+    /// </summary>
+    SourceChange Poll();
 
     IReadOnlyList<string> GetRows(long first, int count);
 
@@ -88,6 +107,9 @@ internal sealed class LineScanner
     /// <summary>Останній рядок закінчився не переводом рядка, а м’яким розривом — текст продовжується в наступному.</summary>
     public bool LastWasSoftBreak { get; private set; }
 
+    /// <summary>Останній рядок закінчився переводом рядка (інакше — м’який розрив або кінець даних).</summary>
+    public bool LastHadNewline { get; private set; }
+
     int Unit => layout.BytesPerCodeUnit;
 
     public bool Next(out long lineStart, out int contentLength)
@@ -95,6 +117,7 @@ internal sealed class LineScanner
         lineStart = pos;
         contentLength = 0;
         LastWasSoftBreak = false;
+        LastHadNewline = false;
         if (pos >= end) return false;
 
         EnsureWindow();
@@ -110,6 +133,7 @@ internal sealed class LineScanner
             contentLength = nl;
             if (contentLength >= Unit && IsCarriageReturn(span, contentLength - Unit)) contentLength -= Unit;
             next = nl + Unit;
+            LastHadNewline = true;
         }
         else if (avail <= maxLine)
         {
@@ -184,13 +208,18 @@ public sealed class TextRowSource : IRowSource
     readonly string path;
     readonly Encoding encoding;
     readonly CodeUnitLayout layout;
-    readonly long dataStart, length;
+    readonly long dataStart;
     readonly List<long> checkpoints = new();   // початок рядків 0, 256, 512, …
     readonly object gate = new();
     readonly FileStream reader;
     readonly CancellationTokenSource cts = new();
+    long length;                               // скільки байтів файлу охоплює індекс (росте при стеженні)
     long rowCount;
     volatile bool complete;
+    volatile bool indexing;
+    // Звідки продовжити індексацію, коли файл допишуть: після останнього завершеного рядка.
+    // Недописаний останній рядок (без переводу рядка) перечитується — до нього можуть дописати решту.
+    long resumeRow, resumePos;
     (long first, int count, IReadOnlyList<string> rows)? cache;
 
     public TextRowSource(string path, Encoding encoding)
@@ -204,30 +233,43 @@ public sealed class TextRowSource : IRowSource
         int n = reader.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
         dataStart = TextEncodings.PreambleLength(head[..n], encoding);
         checkpoints.Add(dataStart);
-        Task.Run(Index);
+        StartIndex(0, dataStart);
     }
 
     public Encoding Encoding => encoding;
     public long RowCount => Interlocked.Read(ref rowCount);
     public bool IsComplete => complete;
     public bool ShowLineNumbers => true;
+    public long Length => Interlocked.Read(ref length);
     public event Action? RowCountChanged;
 
-    LineScanner Scanner(Stream s, long start) => new(s, start, length, layout, MaxLineBytes);
+    LineScanner Scanner(Stream s, long start) => new(s, start, Length, layout, MaxLineBytes);
 
-    void Index()
+    void StartIndex(long fromRow, long fromPos)
+    {
+        indexing = true;
+        complete = false;
+        Task.Run(() => Index(fromRow, fromPos));
+    }
+
+    /// <summary>Індексує рядки від <paramref name="fromPos"/> (початок рядка номер <paramref name="n"/>) до кінця охопленого файлу.</summary>
+    void Index(long n, long fromPos)
     {
         try
         {
             using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
-            var sc = Scanner(fs, dataStart);
-            long n = 0;
+            var sc = Scanner(fs, fromPos);
             var report = new Throttle(ReportEvery);
+            long lastStart = fromPos;
+            bool lastFinished = true;
             while (sc.Next(out var start, out _))
             {
-                if (n > 0 && n % CheckpointEvery == 0)
-                    lock (gate) checkpoints.Add(start);
+                if (n % CheckpointEvery == 0)
+                    lock (gate)
+                        if (n / CheckpointEvery == checkpoints.Count) checkpoints.Add(start);
                 n++;
+                lastStart = start;
+                lastFinished = sc.LastHadNewline || sc.LastWasSoftBreak;
                 if (report.Due())
                 {
                     cts.Token.ThrowIfCancellationRequested();
@@ -235,17 +277,43 @@ public sealed class TextRowSource : IRowSource
                     RowCountChanged?.Invoke();
                 }
             }
+            lock (gate)
+            {
+                (resumeRow, resumePos) = lastFinished ? (n, sc.Position) : (n - 1, lastStart);
+            }
             Interlocked.Exchange(ref rowCount, n);
-            complete = true;
-            RowCountChanged?.Invoke();
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) { }
-        catch (IOException)
+        catch (OperationCanceledException) { return; }
+        catch (ObjectDisposedException) { return; }
+        catch (IOException) { }
+
+        lock (reader) cache = null;   // останній рядок міг дописатися
+        indexing = false;
+        complete = true;
+        RowCountChanged?.Invoke();
+    }
+
+    public SourceChange Poll()
+    {
+        long now;
+        try
         {
-            complete = true;
-            RowCountChanged?.Invoke();
+            lock (reader) now = reader.Length;
         }
+        catch (ObjectDisposedException)
+        {
+            return SourceChange.Unchanged;
+        }
+        long known = Length;
+        if (now < known) return SourceChange.Reset;
+        if (now == known || indexing) return SourceChange.Unchanged;   // ще індексуємо — дочитаємо на наступній перевірці
+
+        long row, pos;
+        lock (gate) (row, pos) = (resumeRow, resumePos);
+        Interlocked.Exchange(ref length, now);
+        lock (reader) cache = null;
+        StartIndex(row, pos);
+        return SourceChange.Grew;
     }
 
     /// <summary>Сканер, встановлений на початок рядка <paramref name="row"/> (або найближчого відомого).</summary>
@@ -300,7 +368,7 @@ public sealed class TextRowSource : IRowSource
         var sc = SeekRow(fs, fromRow, out var row);
         if (row != fromRow) return null;
         var report = new Throttle(TimeSpan.FromMilliseconds(100));
-        double span = Math.Max(1, length - dataStart);
+        double span = Math.Max(1, Length - dataStart);
 
         // Хвіст попереднього рядка, якщо він закінчився м’яким розривом: збіг може перетинати межу.
         string? prevTail = null;
@@ -356,7 +424,7 @@ public sealed class HexRowSource : IRowSource
 
     readonly string path;
     readonly FileStream reader;
-    readonly long length;
+    long length;
 
     public HexRowSource(string path)
     {
@@ -365,17 +433,37 @@ public sealed class HexRowSource : IRowSource
         length = reader.Length;
     }
 
-    public long RowCount => (length + BytesPerRow - 1) / BytesPerRow;
+    public long RowCount => (Length + BytesPerRow - 1) / BytesPerRow;
     public bool IsComplete => true;
     public bool ShowLineNumbers => false;
-    public event Action? RowCountChanged { add { } remove { } }
+    public long Length => Interlocked.Read(ref length);
+    public event Action? RowCountChanged;
+
+    public SourceChange Poll()
+    {
+        long now;
+        try
+        {
+            lock (reader) now = reader.Length;
+        }
+        catch (ObjectDisposedException)
+        {
+            return SourceChange.Unchanged;
+        }
+        long known = Length;
+        if (now < known) return SourceChange.Reset;
+        if (now == known) return SourceChange.Unchanged;
+        Interlocked.Exchange(ref length, now);
+        RowCountChanged?.Invoke();
+        return SourceChange.Grew;
+    }
 
     public IReadOnlyList<string> GetRows(long first, int count)
     {
         var rows = new List<string>(count);
-        long offset = first * BytesPerRow;
-        if (offset >= length) return rows;
-        var bytes = new byte[(int)Math.Min((long)count * BytesPerRow, length - offset)];
+        long offset = first * BytesPerRow, total = Length;
+        if (offset >= total) return rows;
+        var bytes = new byte[(int)Math.Min((long)count * BytesPerRow, total - offset)];
         int read;
         lock (reader)
         {
@@ -419,8 +507,8 @@ public sealed class HexRowSource : IRowSource
         var pattern = ParseQuery(query);
         if (pattern.Length == 0) return null;
         using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
-        long start = fromRow * BytesPerRow + fromColumn;
-        if (start >= length) return null;
+        long start = fromRow * BytesPerRow + fromColumn, fileLength = Length;
+        if (start >= fileLength) return null;
         var buf = new byte[(1 << 20) + pattern.Length];
         long bufOffset = start;
         int carry = 0;
@@ -443,7 +531,7 @@ public sealed class HexRowSource : IRowSource
             if (report.Due())
             {
                 ct.ThrowIfCancellationRequested();
-                progress?.Invoke((double)bufOffset / Math.Max(1, length));
+                progress?.Invoke((double)bufOffset / Math.Max(1, fileLength));
             }
         }
     }

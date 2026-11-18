@@ -37,12 +37,14 @@ public sealed class ViewerWindow : Window
     readonly Grid content = new();
     readonly TextBox findBox = new() { Width = 320 };
     readonly Border findBar;
-    readonly Button encButton, wrapButton, hexButton, saveButton;
+    readonly Button encButton, wrapButton, hexButton, saveButton, followButton;
     Encoding enc = new UTF8Encoding(false);
     bool encChosen, hex, hexDecided, dirty, loading;
     Display display;
     CancellationTokenSource? findCts;
     string baseInfo = "";
+    /// <summary>Користувач увімкнув стеження (Ctrl+End) — файл показується віртуально навіть якщо він малий.</summary>
+    bool followMode;
 
     public ViewerWindow(string path, ViewerMode mode)
     {
@@ -78,6 +80,9 @@ public sealed class ViewerWindow : Window
             }
         };
         large.StatusChanged += UpdateLargeInfo;
+        large.FollowChanged += UpdateLargeInfo;
+        // Файл обрізали / ротація логу під час стеження — відкриваємо заново, стеження лишається.
+        large.SourceReset += () => { if (display == Display.Large) Load(); };
 
         // Панель інструментів
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 8, 8, 6) };
@@ -87,6 +92,8 @@ public sealed class ViewerWindow : Window
         wrapButton.Click += (_, _) => ToggleWrap();
         hexButton = ToolButton("", "Hex (F4)");
         hexButton.Click += (_, _) => ToggleHex();
+        followButton = ToolButton("\uE8B1", "Стежити (Ctrl+End)");
+        followButton.Click += (_, _) => ToggleFollow();
         var findButton = ToolButton("", "Пошук (Ctrl+F)");
         findButton.Click += (_, _) => ShowFind();
         saveButton = ToolButton("", "Зберегти (Ctrl+S)");
@@ -95,6 +102,7 @@ public sealed class ViewerWindow : Window
         bar.Children.Add(encButton);
         bar.Children.Add(wrapButton);
         if (!edit) bar.Children.Add(hexButton);
+        if (!edit) bar.Children.Add(followButton);
         bar.Children.Add(findButton);
 
         // Рядок пошуку
@@ -194,7 +202,7 @@ public sealed class ViewerWindow : Window
             }
             if (!encChosen) enc = TextEncodings.Detect(head, truncated: fi.Length > head.Length);
 
-            if (!edit && (hex || fi.Length > MaxTextBoxBytes)) ShowLarge(fi);
+            if (!edit && (hex || followMode || fi.Length > MaxTextBoxBytes)) ShowLarge(fi);
             else ShowSmallText(fi);
         }
         catch (Exception ex)
@@ -203,6 +211,7 @@ public sealed class ViewerWindow : Window
             info.Text = "Помилка: " + ex.Message;
         }
         hexButton.Visibility = edit || display == Display.Image ? Visibility.Collapsed : Visibility.Visible;
+        followButton.Visibility = hexButton.Visibility;
         encButton.Visibility = display == Display.Image || hex ? Visibility.Collapsed : Visibility.Visible;
         wrapButton.Visibility = display == Display.Text ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -216,22 +225,27 @@ public sealed class ViewerWindow : Window
         loading = false;
         text.CaretIndex = 0;
         text.ScrollToHome();
-        info.Text = $"{Util.FormatSize(fi.Length)}  ·  {TextEncodings.NameOf(enc)}  ·  {TextEncodings.CountLines(text.Text):N0} рядків";
+        info.Text = $"{Util.FormatSize(fi.Length)}  ·  {TextEncodings.NameOf(enc)}  ·  {Rows(TextEncodings.CountLines(text.Text))}"
+                    + (edit ? "" : "  ·  Ctrl+End — стежити за змінами");
         text.Focus();
     }
 
     void ShowLarge(FileInfo fi)
     {
         SetContent(Display.Large, large);
-        baseInfo = $"{Util.FormatSize(fi.Length)}  ·  {(hex ? "HEX" : TextEncodings.NameOf(enc))}";
+        baseInfo = hex ? "HEX" : TextEncodings.NameOf(enc);
         large.SetSource(hex ? new HexRowSource(path) : new TextRowSource(path, enc));
         large.Focus();
     }
 
+    static string Rows(long n) => $"{n:N0} {Util.Plural(n, "рядок", "рядки", "рядків")}";
+
     void UpdateLargeInfo()
     {
         if (display != Display.Large || large.Source is not { } src) return;
-        info.Text = $"{baseInfo}  ·  {src.RowCount:N0} рядків" + (src.IsComplete ? "" : "  ·  індексація…");
+        info.Text = $"{Util.FormatSize(src.Length)}  ·  {baseInfo}  ·  {Rows(src.RowCount)}"
+                    + (src.IsComplete ? "" : "  ·  індексація…")
+                    + (large.Follow ? "  ·  ● стеження за кінцем файлу (↑ / PgUp — зупинити)" : "  ·  Ctrl+End — стежити за змінами");
     }
 
     void SetContent(Display m, UIElement element)
@@ -326,6 +340,25 @@ public sealed class ViewerWindow : Window
     }
 
     void ToggleWrap() => text.TextWrapping = text.TextWrapping == TextWrapping.NoWrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
+
+    /// <summary>Кінець файлу й стеження за змінами (як Ctrl+End у Far). Малий файл для цього переходить у віртуальний режим.</summary>
+    void StartFollow()
+    {
+        if (edit || display == Display.Image) return;
+        if (display != Display.Large)
+        {
+            followMode = true;
+            Load();
+        }
+        large.Follow = true;
+        large.Focus();
+    }
+
+    void ToggleFollow()
+    {
+        if (display == Display.Large && large.Follow) large.Follow = false;
+        else StartFollow();
+    }
 
     void ToggleHex()
     {
@@ -465,6 +498,11 @@ public sealed class ViewerWindow : Window
                     if (display == Display.Large) large.Focus(); else text.Focus();
                 }
                 else Close();
+                e.Handled = true;
+                break;
+            case Key.End when m == ModifierKeys.Control && !edit && display == Display.Text:
+                // Як у Far: кінець файлу й стеження за ним. У віртуальному режимі Ctrl+End обробляє сам LargeFileView.
+                StartFollow();
                 e.Handled = true;
                 break;
             case Key.F3 when m == ModifierKeys.None:

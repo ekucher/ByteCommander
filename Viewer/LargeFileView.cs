@@ -21,9 +21,17 @@ public sealed class LargeFileView : Grid
     int leftCol;
     int maxCols = 1;
     TextMatch? match;
+    bool follow;
+    readonly System.Windows.Threading.DispatcherTimer followTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
     /// <summary>Змінилась кількість рядків / стан індексації — для рядка стану.</summary>
     public event Action? StatusChanged;
+
+    /// <summary>Увімкнено / вимкнено стеження за кінцем файлу.</summary>
+    public event Action? FollowChanged;
+
+    /// <summary>Під час стеження файл став коротшим (обрізали, ротація логу) — власник має відкрити його заново.</summary>
+    public event Action? SourceReset;
 
     public LargeFileView()
     {
@@ -43,12 +51,56 @@ public sealed class LargeFileView : Grid
         FocusVisualStyle = null;
         ClipToBounds = true;
         vbar.ValueChanged += (_, e) => { topRow = (long)e.NewValue; presenter.InvalidateVisual(); };
+        // Користувач потягнув повзунок угору — стеження вимикається (як у Far).
+        vbar.Scroll += (_, e) => { if (e.NewValue < vbar.Maximum) Follow = false; };
+        followTimer.Tick += (_, _) => PollSource();
         hbar.ValueChanged += (_, e) => { leftCol = (int)e.NewValue; presenter.InvalidateVisual(); };
         SizeChanged += (_, _) => UpdateScrollBars();
         MouseDown += (_, _) => Focus();
         // Рядки малюються вручну (OnRender) — при зміні теми перемальовуємо самі.
-        Loaded += (_, _) => Services.ThemeManager.Changed += OnThemeChanged;
-        Unloaded += (_, _) => Services.ThemeManager.Changed -= OnThemeChanged;
+        Loaded += (_, _) =>
+        {
+            Services.ThemeManager.Changed += OnThemeChanged;
+            if (follow) followTimer.Start();
+        };
+        Unloaded += (_, _) =>
+        {
+            Services.ThemeManager.Changed -= OnThemeChanged;
+            followTimer.Stop();
+        };
+    }
+
+    /// <summary>
+    /// Стеження за файлом у реальному часі, як «tail -f» / Ctrl+End у Far: переглядач тримається
+    /// в кінці файлу і показує нові рядки, щойно їх дописали. Прокрутка вгору вимикає стеження.
+    /// </summary>
+    public bool Follow
+    {
+        get => follow;
+        set
+        {
+            if (follow == value) return;
+            follow = value;
+            if (follow)
+            {
+                followTimer.Start();
+                PollSource();
+                ScrollToEnd();
+            }
+            else followTimer.Stop();
+            FollowChanged?.Invoke();
+        }
+    }
+
+    void PollSource()
+    {
+        if (source?.Poll() == SourceChange.Reset) SourceReset?.Invoke();
+    }
+
+    void ScrollToEnd()
+    {
+        UpdateScrollBars();
+        vbar.Value = vbar.Maximum;
     }
 
     void OnThemeChanged() => presenter.InvalidateVisual();
@@ -70,13 +122,16 @@ public sealed class LargeFileView : Grid
         vbar.Value = 0;
         hbar.Value = 0;
         UpdateScrollBars();
+        if (source == null) Follow = false;
+        else if (follow) ScrollToEnd();   // стеження переживає заміну джерела (hex / кодування / перевідкриття)
         presenter.InvalidateVisual();
         StatusChanged?.Invoke();
     }
 
     void OnRowCountChanged() => Dispatcher.InvokeAsync(() =>
     {
-        UpdateScrollBars();
+        if (follow) ScrollToEnd();
+        else UpdateScrollBars();
         presenter.InvalidateVisual();
         StatusChanged?.Invoke();
     });
@@ -138,6 +193,7 @@ public sealed class LargeFileView : Grid
     protected override void OnPreviewMouseWheel(MouseWheelEventArgs e)
     {
         int lines = e.Delta / 120 * 3;
+        if (lines > 0 && Keyboard.Modifiers != ModifierKeys.Shift) Follow = false;   // колесо вгору
         if (Keyboard.Modifiers == ModifierKeys.Shift) hbar.Value = Math.Clamp(hbar.Value - lines * 4, 0, hbar.Maximum);
         else vbar.Value = Math.Clamp(vbar.Value - lines, 0, vbar.Maximum);
         e.Handled = true;
@@ -150,11 +206,11 @@ public sealed class LargeFileView : Grid
         switch (e.Key)
         {
             case Key.Down: vbar.Value = Math.Min(vbar.Maximum, vbar.Value + 1); break;
-            case Key.Up: vbar.Value = Math.Max(0, vbar.Value - 1); break;
+            case Key.Up: Follow = false; vbar.Value = Math.Max(0, vbar.Value - 1); break;
             case Key.PageDown: vbar.Value = Math.Min(vbar.Maximum, vbar.Value + vis - 1); break;
-            case Key.PageUp: vbar.Value = Math.Max(0, vbar.Value - vis + 1); break;
-            case Key.Home when ctrl: vbar.Value = 0; hbar.Value = 0; break;
-            case Key.End when ctrl: vbar.Value = vbar.Maximum; break;
+            case Key.PageUp: Follow = false; vbar.Value = Math.Max(0, vbar.Value - vis + 1); break;
+            case Key.Home when ctrl: Follow = false; vbar.Value = 0; hbar.Value = 0; break;
+            case Key.End when ctrl: Follow = true; ScrollToEnd(); break;   // кінець файлу + стеження (як у Far)
             case Key.Home: hbar.Value = 0; break;
             case Key.End: hbar.Value = hbar.Maximum; break;
             case Key.Right: hbar.Value = Math.Min(hbar.Maximum, hbar.Value + (ctrl ? 16 : 1)); break;
