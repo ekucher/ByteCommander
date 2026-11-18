@@ -86,6 +86,87 @@ public sealed class FollowTests(TestWorkspace ws)
     }
 
     [Fact]
+    public void RotationByRename_ReportsReset()
+    {
+        // Найпоширеніша ротація (NLog, log4net, logrotate create): старий файл перейменовують, новий створюють.
+        // Дескриптор переглядача лишається на старому файлі — розмір не зменшився, але файл за шляхом уже інший.
+        var p = WriteFile("renamed.log", Lines(0, 100));
+        using var src = new TextRowSource(p, new UTF8Encoding(false));
+        WaitIndexed(src);
+
+        var old = p + ".1";
+        if (File.Exists(old)) File.Delete(old);
+        File.Move(p, old);
+        File.WriteAllText(p, Lines(0, 500));   // новий файл навіть більший за старий
+
+        Assert.Equal(SourceChange.Reset, src.Poll());
+    }
+
+    [Fact]
+    public void DeletedFile_ReportsDeleted_ThenResetWhenRecreated()
+    {
+        var p = WriteFile("deleted.log", Lines(0, 20));
+        using var src = new TextRowSource(p, new UTF8Encoding(false));
+        WaitIndexed(src);
+
+        File.Delete(p);
+        // На NTFS з POSIX-видаленням ім'я зникає одразу, навіть поки файл відкритий нами.
+        if (!File.Exists(p)) Assert.Equal(SourceChange.Deleted, src.Poll());
+
+        File.WriteAllText(p, Lines(0, 5));
+        Assert.Equal(SourceChange.Reset, src.Poll());
+    }
+
+    [Fact]
+    public void HexSource_RotationByRename_ReportsReset()
+    {
+        var p = ws.WriteFile(nameof(FollowTests), "renamed.bin", new byte[64]);
+        using var src = new HexRowSource(p);
+        var old = p + ".1";
+        if (File.Exists(old)) File.Delete(old);
+        File.Move(p, old);
+        File.WriteAllBytes(p, new byte[128]);
+
+        Assert.Equal(SourceChange.Reset, src.Poll());
+    }
+
+    [Fact]
+    public void AfterRenameRotation_SourceKeepsReadingTheOriginalFile()
+    {
+        // Регресія: індексація й пошук відкривали файл за шляхом, а розмір брали з дескриптора старого файлу —
+        // після ротації джерело змішувало два різні файли й «знаходило» мільйони порожніх рядків.
+        var p = WriteFile("consistent.log", Lines(0, 300));
+        using var src = new TextRowSource(p, new UTF8Encoding(false));
+        WaitIndexed(src);
+
+        var old = p + ".1";
+        if (File.Exists(old)) File.Delete(old);
+        File.Move(p, old);
+        File.WriteAllText(p, "зовсім інший новий файл\n");
+
+        Assert.Equal(300, src.RowCount);
+        Assert.Equal(new[] { "рядок 0", "рядок 1" }, src.GetRows(0, 2));
+        Assert.Equal(new[] { "рядок 299" }, src.GetRows(299, 5));
+        Assert.Equal(new TextMatch(299, 0, 9), src.Find("рядок 299", 0, 0, default));
+        Assert.Null(src.Find("зовсім інший", 0, 0, default));
+    }
+
+    [Fact]
+    public void LineScanner_WhenFileIsShorterThanExpected_Stops()
+    {
+        // Захист від зациклення: якщо файл коротший, ніж вважає джерело (обрізали посеред читання),
+        // сканер має закінчити, а не видавати нескінченні порожні рядки.
+        var p = WriteFile("short.txt", "a\nb\n");
+        using var handle = Util.OpenSharedHandle(p);
+        var sc = new LineScanner(handle, 0, end: 1_000_000, CodeUnitLayout.From(new UTF8Encoding(false)), TextRowSource.MaxLineBytes);
+
+        int rows = 0;
+        while (sc.Next(out _, out _) && rows < 100) rows++;
+
+        Assert.Equal(2, rows);
+    }
+
+    [Fact]
     public void UnchangedFile_ReportsUnchanged()
     {
         var p = WriteFile("still.txt", Lines(0, 10));

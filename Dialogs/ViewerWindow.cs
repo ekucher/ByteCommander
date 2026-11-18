@@ -43,8 +43,9 @@ public sealed class ViewerWindow : Window
     Display display;
     CancellationTokenSource? findCts;
     string baseInfo = "";
-    /// <summary>Користувач увімкнув стеження (Ctrl+End) — файл показується віртуально навіть якщо він малий.</summary>
-    bool followMode;
+    /// <summary>Під час стеження файл за шляхом зник (видалили; при ротації новий може з’явитися).</summary>
+    bool fileMissing;
+    const string FollowHint = "  ·  Ctrl+End — стежити за змінами";
 
     public ViewerWindow(string path, ViewerMode mode)
     {
@@ -81,8 +82,18 @@ public sealed class ViewerWindow : Window
         };
         large.StatusChanged += UpdateLargeInfo;
         large.FollowChanged += UpdateLargeInfo;
-        // Файл обрізали / ротація логу під час стеження — відкриваємо заново, стеження лишається.
-        large.SourceReset += () => { if (display == Display.Large) Load(); };
+        // Ротація логу (обрізали, підмінили новим) — відкриваємо заново, стеження лишається.
+        // Файл видалили — показуємо це й чекаємо: при ротації новий файл з’явиться за тим самим шляхом.
+        large.SourceLost += change =>
+        {
+            if (display != Display.Large) return;
+            if (change == SourceChange.Reset) Load();
+            else if (!fileMissing)
+            {
+                fileMissing = true;
+                UpdateLargeInfo();
+            }
+        };
 
         // Панель інструментів
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 8, 8, 6) };
@@ -202,7 +213,8 @@ public sealed class ViewerWindow : Window
             }
             if (!encChosen) enc = TextEncodings.Detect(head, truncated: fi.Length > head.Length);
 
-            if (!edit && (hex || followMode || fi.Length > MaxTextBoxBytes)) ShowLarge(fi);
+            // Поки ввімкнене стеження, файл лишається у віртуальному режимі (переживає ротацію, F4, кодування).
+            if (!edit && (hex || large.Follow || fi.Length > MaxTextBoxBytes)) ShowLarge(fi);
             else ShowSmallText(fi);
         }
         catch (Exception ex)
@@ -226,12 +238,13 @@ public sealed class ViewerWindow : Window
         text.CaretIndex = 0;
         text.ScrollToHome();
         info.Text = $"{Util.FormatSize(fi.Length)}  ·  {TextEncodings.NameOf(enc)}  ·  {Rows(TextEncodings.CountLines(text.Text))}"
-                    + (edit ? "" : "  ·  Ctrl+End — стежити за змінами");
+                    + (edit ? "" : FollowHint);
         text.Focus();
     }
 
     void ShowLarge(FileInfo fi)
     {
+        fileMissing = false;
         SetContent(Display.Large, large);
         baseInfo = hex ? "HEX" : TextEncodings.NameOf(enc);
         large.SetSource(hex ? new HexRowSource(path) : new TextRowSource(path, enc));
@@ -245,7 +258,8 @@ public sealed class ViewerWindow : Window
         if (display != Display.Large || large.Source is not { } src) return;
         info.Text = $"{Util.FormatSize(src.Length)}  ·  {baseInfo}  ·  {Rows(src.RowCount)}"
                     + (src.IsComplete ? "" : "  ·  індексація…")
-                    + (large.Follow ? "  ·  ● стеження за кінцем файлу (↑ / PgUp — зупинити)" : "  ·  Ctrl+End — стежити за змінами");
+                    + (large.Follow ? "  ·  ● стеження за кінцем файлу (↑ / PgUp — зупинити)" : FollowHint)
+                    + (fileMissing ? "  ·  ⚠ файл видалено — чекаю, поки з’явиться знову" : "");
     }
 
     void SetContent(Display m, UIElement element)
@@ -347,7 +361,7 @@ public sealed class ViewerWindow : Window
         if (edit || display == Display.Image) return;
         if (display != Display.Large)
         {
-            followMode = true;
+            large.Follow = true;   // спершу — щоб Load вибрав віртуальний режим
             Load();
         }
         large.Follow = true;
@@ -440,8 +454,9 @@ public sealed class ViewerWindow : Window
                 info.Text += $"  ·  «{q}» не знайдено";
             }
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
         {
+            // Скасовано або джерело закрили посеред пошуку (ротація логу, F4, інше кодування).
             UpdateLargeInfo();
         }
         finally

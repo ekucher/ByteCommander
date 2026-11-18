@@ -99,6 +99,10 @@ public static class Util
     public static FileStream OpenShared(string path, FileOptions options = FileOptions.None) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, options);
 
+    /// <summary>Дескриптор файлу на читання з тим самим спільним доступом, що й <see cref="OpenShared"/> (для RandomAccess).</summary>
+    public static Microsoft.Win32.SafeHandles.SafeFileHandle OpenSharedHandle(string path) =>
+        File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, FileOptions.RandomAccess);
+
     /// <summary>
     /// Пише новий вміст у тимчасовий файл поруч із <paramref name="dst"/> і лише після успіху атомарно
     /// замінює ним призначення. При збої чи скасуванні наявний файл лишається недоторканим.

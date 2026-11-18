@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Win32.SafeHandles;
 using System.Text;
 using System.Text.RegularExpressions;
 using ByteCommander.Services;
@@ -18,8 +19,38 @@ public enum SourceChange
     Unchanged,
     /// <summary>Файл дописали — нові рядки дочитуються у фоні (прийде <see cref="IRowSource.RowCountChanged"/>).</summary>
     Grew,
-    /// <summary>Файл став коротшим (обрізали, ротація логу) — джерело треба створити заново.</summary>
+    /// <summary>
+    /// Файл за шляхом уже інший: його обрізали або підмінили новим (ротація логу перейменуванням —
+    /// дескриптор лишився на старому файлі). Джерело треба створити заново.
+    /// </summary>
     Reset,
+    /// <summary>Файлу за шляхом немає (видалили; при ротації новий може з’явитися згодом).</summary>
+    Deleted,
+}
+
+/// <summary>Спільна для джерел перевірка файлу на диску під час стеження.</summary>
+internal static class FileProbe
+{
+    /// <summary>
+    /// Порівнює відкритий файл із тим, що зараз лежить за <paramref name="path"/>.
+    /// <see cref="SourceChange.Grew"/> — у <paramref name="now"/> новий розмір файлу.
+    /// </summary>
+    public static SourceChange Check(SafeFileHandle file, string path, long known, out long now)
+    {
+        now = known;
+        try
+        {
+            now = RandomAccess.GetLength(file);
+            if (!File.Exists(path)) return SourceChange.Deleted;
+            bool? same = NativeMethods.IsSameFile(file, path);
+            if (same == false || now < known) return SourceChange.Reset;
+            return now > known ? SourceChange.Grew : SourceChange.Unchanged;
+        }
+        catch (ObjectDisposedException)
+        {
+            return SourceChange.Unchanged;
+        }
+    }
 }
 
 /// <summary>Джерело рядків для віртуального переглядача: читає з диска лише те, що видно.</summary>
@@ -78,7 +109,7 @@ internal sealed class Throttle(TimeSpan interval)
 /// </summary>
 internal sealed class LineScanner
 {
-    readonly Stream stream;
+    readonly SafeFileHandle file;
     readonly long end;
     readonly CodeUnitLayout layout;
     readonly int maxLine;
@@ -88,9 +119,10 @@ internal sealed class LineScanner
     long pos;                   // початок наступного рядка
     int lastOffset, lastLength;
 
-    public LineScanner(Stream stream, long start, long end, CodeUnitLayout layout, int maxLineBytes)
+    /// <param name="file">Дескриптор файлу; читання позиційні (RandomAccess), тож кілька сканерів можуть працювати паралельно.</param>
+    public LineScanner(SafeFileHandle file, long start, long end, CodeUnitLayout layout, int maxLineBytes)
     {
-        this.stream = stream;
+        this.file = file;
         this.end = end;
         this.layout = layout;
         maxLine = maxLineBytes - maxLineBytes % layout.BytesPerCodeUnit;
@@ -123,6 +155,9 @@ internal sealed class LineScanner
         EnsureWindow();
         int rel = (int)(pos - bufStart);
         int avail = (int)Math.Min(bufLen - rel, end - pos);
+        // Файл виявився коротшим, ніж очікувалось (його обрізали посеред читання): це кінець даних,
+        // а не порожній рядок — інакше сканер «читав» би нескінченні порожні рядки, не просуваючись.
+        if (avail <= 0) return false;
         int window = Math.Min(avail, maxLine + Unit);
         var span = buf.AsSpan(rel, window);
 
@@ -174,10 +209,22 @@ internal sealed class LineScanner
     {
         long need = Math.Min(end, pos + maxLine + Unit * 2);
         if (pos >= bufStart && need <= bufStart + bufLen) return;
-        stream.Position = pos;
         bufStart = pos;
         int toRead = (int)Math.Min(buf.Length, end - pos);
-        bufLen = stream.ReadAtLeast(buf.AsSpan(0, toRead), toRead, throwOnEndOfStream: false);
+        bufLen = ReadAt(file, buf.AsSpan(0, toRead), pos);
+    }
+
+    /// <summary>Прочитати до <paramref name="buffer"/>.Length байтів з позиції; менше — лише в кінці файлу.</summary>
+    internal static int ReadAt(SafeFileHandle file, Span<byte> buffer, long offset)
+    {
+        int total = 0;
+        while (total < buffer.Length)
+        {
+            int n = RandomAccess.Read(file, buffer[total..], offset + total);
+            if (n <= 0) break;
+            total += n;
+        }
+        return total;
     }
 
     int FindNewline(ReadOnlySpan<byte> span)
@@ -211,7 +258,11 @@ public sealed class TextRowSource : IRowSource
     readonly long dataStart;
     readonly List<long> checkpoints = new();   // початок рядків 0, 256, 512, …
     readonly object gate = new();
-    readonly FileStream reader;
+    readonly object cacheGate = new();
+    // Один дескриптор на все джерело: індексація, читання рядків і пошук бачать той самий файл,
+    // навіть якщо за шляхом його вже підмінили (ротація логу перейменуванням). Читання позиційні —
+    // потоки не заважають один одному.
+    readonly SafeFileHandle file;
     readonly CancellationTokenSource cts = new();
     long length;                               // скільки байтів файлу охоплює індекс (росте при стеженні)
     long rowCount;
@@ -227,10 +278,10 @@ public sealed class TextRowSource : IRowSource
         this.path = path;
         this.encoding = encoding;
         layout = CodeUnitLayout.From(encoding);
-        reader = Util.OpenShared(path, FileOptions.RandomAccess);
-        length = reader.Length;
+        file = Util.OpenSharedHandle(path);
+        length = RandomAccess.GetLength(file);
         Span<byte> head = stackalloc byte[4];
-        int n = reader.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+        int n = LineScanner.ReadAt(file, head, 0);
         dataStart = TextEncodings.PreambleLength(head[..n], encoding);
         checkpoints.Add(dataStart);
         StartIndex(0, dataStart);
@@ -243,7 +294,7 @@ public sealed class TextRowSource : IRowSource
     public long Length => Interlocked.Read(ref length);
     public event Action? RowCountChanged;
 
-    LineScanner Scanner(Stream s, long start) => new(s, start, Length, layout, MaxLineBytes);
+    LineScanner Scanner(long start) => new(file, start, Length, layout, MaxLineBytes);
 
     void StartIndex(long fromRow, long fromPos)
     {
@@ -252,13 +303,13 @@ public sealed class TextRowSource : IRowSource
         Task.Run(() => Index(fromRow, fromPos));
     }
 
-    /// <summary>Індексує рядки від <paramref name="fromPos"/> (початок рядка номер <paramref name="n"/>) до кінця охопленого файлу.</summary>
-    void Index(long n, long fromPos)
+    /// <summary>Індексує рядки від <paramref name="fromPos"/> (початок рядка номер <paramref name="fromRow"/>) до кінця охопленого файлу.</summary>
+    void Index(long fromRow, long fromPos)
     {
+        long n = fromRow;   // номер рядка, який зараз читаємо
         try
         {
-            using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
-            var sc = Scanner(fs, fromPos);
+            var sc = Scanner(fromPos);
             var report = new Throttle(ReportEvery);
             long lastStart = fromPos;
             bool lastFinished = true;
@@ -287,7 +338,7 @@ public sealed class TextRowSource : IRowSource
         catch (ObjectDisposedException) { return; }
         catch (IOException) { }
 
-        lock (reader) cache = null;   // останній рядок міг дописатися
+        lock (cacheGate) cache = null;   // останній рядок міг дописатися
         indexing = false;
         complete = true;
         RowCountChanged?.Invoke();
@@ -295,29 +346,20 @@ public sealed class TextRowSource : IRowSource
 
     public SourceChange Poll()
     {
-        long now;
-        try
-        {
-            lock (reader) now = reader.Length;
-        }
-        catch (ObjectDisposedException)
-        {
-            return SourceChange.Unchanged;
-        }
-        long known = Length;
-        if (now < known) return SourceChange.Reset;
-        if (now == known || indexing) return SourceChange.Unchanged;   // ще індексуємо — дочитаємо на наступній перевірці
+        var change = FileProbe.Check(file, path, Length, out long now);
+        if (change != SourceChange.Grew) return change;
+        if (indexing) return SourceChange.Unchanged;   // ще індексуємо — дочитаємо на наступній перевірці
 
         long row, pos;
         lock (gate) (row, pos) = (resumeRow, resumePos);
         Interlocked.Exchange(ref length, now);
-        lock (reader) cache = null;
+        lock (cacheGate) cache = null;
         StartIndex(row, pos);
         return SourceChange.Grew;
     }
 
     /// <summary>Сканер, встановлений на початок рядка <paramref name="row"/> (або найближчого відомого).</summary>
-    LineScanner SeekRow(Stream s, long row, out long atRow)
+    LineScanner SeekRow(long row, out long atRow)
     {
         long cp;
         int k;
@@ -326,7 +368,7 @@ public sealed class TextRowSource : IRowSource
             k = (int)Math.Min(row / CheckpointEvery, checkpoints.Count - 1);
             cp = checkpoints[k];
         }
-        var sc = Scanner(s, cp);
+        var sc = Scanner(cp);
         atRow = (long)k * CheckpointEvery;
         while (atRow < row && sc.Next(out _, out _)) atRow++;
         return sc;
@@ -334,14 +376,21 @@ public sealed class TextRowSource : IRowSource
 
     public IReadOnlyList<string> GetRows(long first, int count)
     {
-        lock (reader)
+        lock (cacheGate)
         {
             if (cache is { } c && c.first == first && c.count == count) return c.rows;
             var rows = new List<string>(count);
-            var sc = SeekRow(reader, first, out var at);
-            if (at == first)
-                while (rows.Count < count && sc.Next(out _, out _))
-                    rows.Add(ToDisplay(encoding.GetString(sc.LastContent)));
+            try
+            {
+                var sc = SeekRow(first, out var at);
+                if (at == first)
+                    while (rows.Count < count && sc.Next(out _, out _))
+                        rows.Add(ToDisplay(encoding.GetString(sc.LastContent)));
+            }
+            catch (ObjectDisposedException)
+            {
+                return rows;   // джерело вже закрили (заміна джерела) — показувати нічого
+            }
             cache = (first, count, rows);
             return rows;
         }
@@ -364,8 +413,16 @@ public sealed class TextRowSource : IRowSource
     public TextMatch? Find(string query, long fromRow, int fromColumn, CancellationToken ct, Action<double>? progress = null)
     {
         if (query.Length == 0) return null;
-        using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
-        var sc = SeekRow(fs, fromRow, out var row);
+        LineScanner sc;
+        long row;
+        try
+        {
+            sc = SeekRow(fromRow, out row);
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
         if (row != fromRow) return null;
         var report = new Throttle(TimeSpan.FromMilliseconds(100));
         double span = Math.Max(1, Length - dataStart);
@@ -411,7 +468,7 @@ public sealed class TextRowSource : IRowSource
     public void Dispose()
     {
         cts.Cancel();
-        lock (reader) reader.Dispose();
+        file.Dispose();
     }
 }
 
@@ -423,14 +480,14 @@ public sealed class HexRowSource : IRowSource
     const int HexStart = 10, AsciiStart = HexStart + BytesPerRow * 3 + 2;
 
     readonly string path;
-    readonly FileStream reader;
+    readonly SafeFileHandle file;   // один дескриптор: читання позиційні, файл той самий навіть після ротації
     long length;
 
     public HexRowSource(string path)
     {
         this.path = path;
-        reader = Util.OpenShared(path, FileOptions.RandomAccess);
-        length = reader.Length;
+        file = Util.OpenSharedHandle(path);
+        length = RandomAccess.GetLength(file);
     }
 
     public long RowCount => (Length + BytesPerRow - 1) / BytesPerRow;
@@ -441,18 +498,8 @@ public sealed class HexRowSource : IRowSource
 
     public SourceChange Poll()
     {
-        long now;
-        try
-        {
-            lock (reader) now = reader.Length;
-        }
-        catch (ObjectDisposedException)
-        {
-            return SourceChange.Unchanged;
-        }
-        long known = Length;
-        if (now < known) return SourceChange.Reset;
-        if (now == known) return SourceChange.Unchanged;
+        var change = FileProbe.Check(file, path, Length, out long now);
+        if (change != SourceChange.Grew) return change;
         Interlocked.Exchange(ref length, now);
         RowCountChanged?.Invoke();
         return SourceChange.Grew;
@@ -465,10 +512,13 @@ public sealed class HexRowSource : IRowSource
         if (offset >= total) return rows;
         var bytes = new byte[(int)Math.Min((long)count * BytesPerRow, total - offset)];
         int read;
-        lock (reader)
+        try
         {
-            reader.Position = offset;
-            read = reader.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
+            read = LineScanner.ReadAt(file, bytes, offset);
+        }
+        catch (ObjectDisposedException)
+        {
+            return rows;
         }
         for (int r = 0; r * BytesPerRow < read; r++)
             rows.Add(FormatRow(offset + (long)r * BytesPerRow, bytes.AsSpan(r * BytesPerRow, Math.Min(BytesPerRow, read - r * BytesPerRow))));
@@ -506,18 +556,18 @@ public sealed class HexRowSource : IRowSource
     {
         var pattern = ParseQuery(query);
         if (pattern.Length == 0) return null;
-        using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
         long start = fromRow * BytesPerRow + fromColumn, fileLength = Length;
         if (start >= fileLength) return null;
         var buf = new byte[(1 << 20) + pattern.Length];
         long bufOffset = start;
         int carry = 0;
         var report = new Throttle(TimeSpan.FromMilliseconds(100));
-        fs.Position = start;
+        long readPos = start;
         while (true)
         {
-            int n = fs.Read(buf, carry, buf.Length - carry);
+            int n = RandomAccess.Read(file, buf.AsSpan(carry), readPos);
             if (n <= 0) return null;
+            readPos += n;
             int total = carry + n;
             int idx = buf.AsSpan(0, total).IndexOf(pattern);
             if (idx >= 0)
@@ -548,8 +598,5 @@ public sealed class HexRowSource : IRowSource
         }
     }
 
-    public void Dispose()
-    {
-        lock (reader) reader.Dispose();
-    }
+    public void Dispose() => file.Dispose();
 }

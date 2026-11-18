@@ -119,6 +119,26 @@ public static class NativeMethods
         return GetFileInformationByHandle(fs.SafeFileHandle, out var info) ? (int)info.NumberOfLinks : 1;
     }
 
+    /// <summary>
+    /// Чи файл, відкритий дескриптором, — той самий, що зараз лежить за <paramref name="path"/>
+    /// (збігаються серійний номер тому та ідентифікатор файлу). Після ротації логу перейменуванням
+    /// дескриптор лишається на старому файлі, а за шляхом з’являється новий — тоді false.
+    /// null — порівняти не вдалося (файл за шляхом недоступний).
+    /// </summary>
+    public static bool? IsSameFile(Microsoft.Win32.SafeHandles.SafeFileHandle handle, string path)
+    {
+        try
+        {
+            using var other = Util.OpenShared(path);
+            if (!GetFileInformationByHandle(handle, out var a) || !GetFileInformationByHandle(other.SafeFileHandle, out var b)) return null;
+            return a.VolumeSerialNumber == b.VolumeSerialNumber && a.FileIndexHigh == b.FileIndexHigh && a.FileIndexLow == b.FileIndexLow;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     // ---------- Темний заголовок вікна ----------
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);

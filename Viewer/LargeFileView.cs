@@ -30,8 +30,11 @@ public sealed class LargeFileView : Grid
     /// <summary>Увімкнено / вимкнено стеження за кінцем файлу.</summary>
     public event Action? FollowChanged;
 
-    /// <summary>Під час стеження файл став коротшим (обрізали, ротація логу) — власник має відкрити його заново.</summary>
-    public event Action? SourceReset;
+    /// <summary>
+    /// Під час стеження файл за шляхом змінився не дописуванням: <see cref='SourceChange.Reset'/> — його обрізали
+    /// чи підмінили (ротація логу), власник має відкрити його заново; <see cref='SourceChange.Deleted'/> — файлу немає.
+    /// </summary>
+    public event Action<SourceChange>? SourceLost;
 
     public LargeFileView()
     {
@@ -94,7 +97,8 @@ public sealed class LargeFileView : Grid
 
     void PollSource()
     {
-        if (source?.Poll() == SourceChange.Reset) SourceReset?.Invoke();
+        var change = source?.Poll();
+        if (change is SourceChange.Reset or SourceChange.Deleted) SourceLost?.Invoke(change.Value);
     }
 
     void ScrollToEnd()
