@@ -144,7 +144,6 @@ public sealed class TextEncodingsTests
     [Fact]
     public void EveryMenuChoice_HasMatchingName()
     {
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         foreach (var choice in TextEncodings.Choices)
             Assert.Equal(choice.Name, TextEncodings.NameOf(choice.Create()));
     }
@@ -156,7 +155,6 @@ public sealed class TextEncodingsTests
     [InlineData(new byte[] { 0xCF, 0xF0, 0xE8, 0xE2 }, "Windows-1251")]   // «Прив» у 1251
     public void Detect(byte[] head, string expected)
     {
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         Assert.Equal(expected, TextEncodings.NameOf(TextEncodings.Detect(head, truncated: false)));
     }
 

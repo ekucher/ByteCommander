@@ -8,6 +8,13 @@ namespace ByteCommander.Services;
 /// </summary>
 public static class TextEncodings
 {
+    // Кодові сторінки (1251, 866, KOI8-U, OEM) у .NET доступні лише після реєстрації провайдера.
+    // Реєструємо тут, щоб модуль не залежав від того, чи зробив це код запуску (тести, інші точки входу).
+    static TextEncodings() => Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+    /// <summary>Кодування за номером кодової сторінки (зокрема однобайтові: 1251, 866, 21866, OEM).</summary>
+    public static Encoding CodePage(int codePage) => Encoding.GetEncoding(codePage);
+
     public sealed record Choice(string Name, Func<Encoding> Create)
     {
         /// <summary>Це кодування (з урахуванням BOM): так меню знає, який пункт позначити.</summary>
@@ -25,9 +32,9 @@ public static class TextEncodings
     {
         new("UTF-8", () => new UTF8Encoding(false)),
         new("UTF-8 BOM", () => new UTF8Encoding(true)),
-        new("Windows-1251", () => Encoding.GetEncoding(1251)),
-        new("DOS-866", () => Encoding.GetEncoding(866)),
-        new("KOI8-U", () => Encoding.GetEncoding(21866)),
+        new("Windows-1251", () => CodePage(1251)),
+        new("DOS-866", () => CodePage(866)),
+        new("KOI8-U", () => CodePage(21866)),
         new("UTF-16 LE", () => new UnicodeEncoding(false, true)),
         new("UTF-16 BE", () => new UnicodeEncoding(true, true)),
     };
@@ -37,7 +44,7 @@ public static class TextEncodings
     /// (типові для старих файлів у Windows і DOS).
     /// </summary>
     public static IReadOnlyList<Encoding> LegacyCyrillic => legacy.Value;
-    static readonly Lazy<Encoding[]> legacy = new(() => new[] { Encoding.GetEncoding(1251), Encoding.GetEncoding(866) });
+    static readonly Lazy<Encoding[]> legacy = new(() => new[] { CodePage(1251), CodePage(866) });
 
     public static bool IsUtf16(Encoding e) => e is UnicodeEncoding;
     public static bool IsUtf16BigEndian(Encoding e) => e.CodePage == Utf16BigEndianCodePage;
@@ -88,7 +95,7 @@ public static class TextEncodings
         }
         catch (DecoderFallbackException)
         {
-            return Encoding.GetEncoding(1251);
+            return CodePage(1251);
         }
     }
 

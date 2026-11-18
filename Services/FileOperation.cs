@@ -538,8 +538,8 @@ public sealed class FileOperation
     {
         get
         {
-            try { return Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage); }
-            catch { return Encoding.GetEncoding(866); }
+            try { return TextEncodings.CodePage(CultureInfo.CurrentCulture.TextInfo.OEMCodePage); }
+            catch { return TextEncodings.CodePage(866); }
         }
     }
 
