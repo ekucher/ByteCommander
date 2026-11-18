@@ -21,6 +21,12 @@
     <SolidColorBrush x:Key="ControlPressedBrush" Color="#25272C"/>
     <SolidColorBrush x:Key="ThumbBrush" Color="#4A4D56"/>
     <SolidColorBrush x:Key="ThumbHoverBrush" Color="#666A76"/>
+    <!-- Порівняння файлів і каталогів -->
+    <SolidColorBrush x:Key="DiffAddedBrush" Color="#1F3A2A"/>
+    <SolidColorBrush x:Key="DiffDeletedBrush" Color="#45242A"/>
+    <SolidColorBrush x:Key="DiffChangedBrush" Color="#26334F"/>
+    <SolidColorBrush x:Key="DiffChangedTextBrush" Color="#3E5799"/>
+    <SolidColorBrush x:Key="DiffFillerBrush" Color="#202125"/>
     <!-- Кут між скролбарами у стандартному ScrollViewer -->
     <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#222327"/>
 </ResourceDictionary>

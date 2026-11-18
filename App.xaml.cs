@@ -44,6 +44,26 @@ public partial class App : Application
             return;
         }
 
+        // ByteCommander.exe --diff <ліве> <праве> — порівняння файлів або каталогів (можна підключити як difftool).
+        if (e.Args.Length >= 1 && e.Args[0] is "--diff" or "/diff")
+        {
+            var paths = e.Args.Skip(1).Take(2).Select(Path.GetFullPath).ToArray();
+            bool files = paths.Length == 2 && paths.All(File.Exists), dirs = paths.Length == 2 && paths.All(Directory.Exists);
+            if (!files && !dirs)
+            {
+                ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                Dialogs.Error(null, "Вкажіть два файли або два каталоги, що існують.\n\nВикористання: ByteCommander.exe --diff <ліве> <праве>"
+                    + (paths.Length > 0 ? "\n\n" + string.Join("\n", paths.Select(p => (File.Exists(p) || Directory.Exists(p) ? "✓ " : "✗ ") + p)) : ""));
+                Shutdown(2);
+                return;
+            }
+            ShutdownMode = ShutdownMode.OnLastWindowClose;
+            Window w = files ? new Compare.TextCompareWindow(paths[0], paths[1]) : new Compare.FolderCompareWindow(paths[0], paths[1]);
+            w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            w.Show();
+            return;
+        }
+
         MainWindow = new MainWindow(settings);
         MainWindow.Show();
     }

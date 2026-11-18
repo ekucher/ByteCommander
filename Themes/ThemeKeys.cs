@@ -26,4 +26,11 @@ public static class ThemeKeys
     public const string ControlPressedBrush = nameof(ControlPressedBrush);
     public const string ThumbBrush = nameof(ThumbBrush);
     public const string ThumbHoverBrush = nameof(ThumbHoverBrush);
+
+    // Порівняння файлів і каталогів
+    public const string DiffAddedBrush = nameof(DiffAddedBrush);
+    public const string DiffDeletedBrush = nameof(DiffDeletedBrush);
+    public const string DiffChangedBrush = nameof(DiffChangedBrush);
+    public const string DiffChangedTextBrush = nameof(DiffChangedTextBrush);
+    public const string DiffFillerBrush = nameof(DiffFillerBrush);
 }

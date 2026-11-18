@@ -32,6 +32,7 @@
                 <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="Видалити в кошик (F8 / Del)" Click="Delete_Click"/>
                 <Border Width="1" Background="{DynamicResource LineBrush}" Margin="6,7"/>
                 <Button Style="{StaticResource IconButton}" Content="&#xE721;" ToolTip="Пошук файлів (Alt+F7)" Click="Search_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE7C4;" ToolTip="Порівняти файли (Ctrl+F2) / каталоги (Shift+F2)" Click="Compare_Click"/>
                 <Button Style="{StaticResource IconButton}" Content="&#xE734;" ToolTip="Закладки (Ctrl+D)" Click="Bookmarks_Click"/>
                 <Button Style="{StaticResource IconButton}" Content="&#xE7B8;" ToolTip="Запакувати в ZIP (Alt+F5)" Click="Pack_Click"/>
                 <Button Style="{StaticResource IconButton}" Content="&#xE8AB;" ToolTip="Поміняти панелі (Ctrl+U)" Click="Swap_Click"/>

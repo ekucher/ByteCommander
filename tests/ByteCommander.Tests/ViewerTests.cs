@@ -217,7 +217,7 @@ public sealed class ThemeTests
     public void Styles_ReferenceOnlyDefinedColors_AndDynamically()
     {
         var keys = Keys(@"Themes\Colors.Dark.xaml");
-        foreach (var file in new[] { @"Themes\Controls.xaml", @"Controls\FilePanel.xaml", @"MainWindow.xaml" })
+        foreach (var file in new[] { @"Themes\Controls.xaml", @"Controls\FilePanel.xaml", @"MainWindow.xaml", @"Compare\TextCompareWindow.xaml", @"Compare\FolderCompareWindow.xaml" })
         {
             var xaml = File.ReadAllText(RepoFile(file));
             // Кольори мають підтягуватись динамічно, інакше зміна теми не дійде до цього елемента.

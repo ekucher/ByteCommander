@@ -173,6 +173,8 @@ public partial class MainWindow : Window
         cmdDelete = Add("Видалити в кошик", "\uE74D", () => Delete(false), K(Key.F8), K(Key.Delete));
         Add("Видалити назавжди", "\uE74D", () => Delete(true), K(Key.F8, Shift), K(Key.Delete, Shift));
         cmdSearch = Add("Пошук файлів", "\uE721", ShowSearch, K(Key.F7, Alt));
+        Add("Порівняти файли", "\uE7C4", CompareFiles, K(Key.F2, Ctrl));
+        Add("Порівняти каталоги", "\uE7C4", CompareFolders, K(Key.F2, Shift));
         Add("Запакувати в ZIP", "\uE7B8", Pack, K(Key.F5, Alt));
         Add("Розпакувати ZIP", "\uE7B8", Unpack, K(Key.F9, Alt));
         Add("Властивості", "\uE946", Properties, K(Key.Enter, Alt));
@@ -554,45 +556,13 @@ public partial class MainWindow : Window
     /// <returns>true — операцію завершено повністю: без скасування, без фатальної помилки й без помилок по файлах.</returns>
     async Task<bool> RunOperation(string title, Action<FileOperation, CancellationToken> work)
     {
-        var state = new ProgressState();
-        using var cts = new CancellationTokenSource();
-        var op = new FileOperation(state, AskConflict);
-        var pw = new ProgressWindow(this, title, state, cts);
-        pw.Start();
-        string? fatal = null;
-        try
-        {
-            await Task.Run(() => work(op, cts.Token));
-        }
-        catch (OperationCanceledException)
-        {
-            ShowToast("Операцію скасовано");
-        }
-        catch (Exception ex)
-        {
-            fatal = ex.Message;
-        }
-        finally
-        {
-            pw.Finish();
-        }
-
-        if (fatal != null) Dialogs.Error(this, fatal);
-        else if (op.Errors.Count > 0)
-        {
-            var list = string.Join("\n", op.Errors.Take(15));
-            if (op.Errors.Count > 15) list += $"\n… і ще {op.Errors.Count - 15}";
-            Dialogs.Error(this, $"{title}: завершено з помилками ({op.Errors.Count}):\n\n{list}");
-        }
-        else if (!cts.IsCancellationRequested)
-        {
-            ShowToast($"{title}: готово  ·  {Util.Count(state.DoneFiles, "файл", "файли", "файлів")}" +
-                      (state.TotalBytes > 0 ? $", {Util.FormatSize(state.DoneBytes)}" : ""));
-        }
+        var outcome = await OperationRunner.RunAsync(this, title, AskConflict, work);
+        if (outcome.Canceled) ShowToast("Операцію скасовано");
+        else if (outcome.Completed) ShowToast($"{title}: готово  ·  {outcome.Summary}");
         LeftPanel.Refresh();
         RightPanel.Refresh();
         active.FocusList();
-        return fatal == null && op.Errors.Count == 0 && !cts.IsCancellationRequested;
+        return outcome.Completed;
     }
 
     ConflictChoice AskConflict(string src, string dst) => Dispatcher.Invoke(() =>
@@ -810,6 +780,57 @@ public partial class MainWindow : Window
 
     void ShowSearch() => new SearchWindow(this, active.CurrentPath).Show();
 
+    // =====================================================================
+    // Порівняння
+    // =====================================================================
+
+    /// <summary>
+    /// Ctrl+F2: два виділені файли в активній панелі — їх; інакше файл під курсором і файл з тим самим ім’ям
+    /// в іншій панелі (або файл під курсором там). Каталог під курсором — порівняння каталогів.
+    /// Лівий файл завжди з лівої панелі.
+    /// </summary>
+    void CompareFiles()
+    {
+        var files = active.GetTargets().Where(t => !t.IsDirectory).ToList();
+        if (active.GetTargets().Count == 2 && files.Count == 2)
+        {
+            OpenFileCompare(files[0].FullPath, files[1].FullPath);
+            return;
+        }
+        if (active.CurrentItem is not { IsParent: false } cur)
+        {
+            CompareFolders();
+            return;
+        }
+        string sameName = Path.Combine(Other.CurrentPath, cur.Name);
+        if (cur.IsDirectory)
+        {
+            var otherDir = Directory.Exists(sameName) ? sameName : Other.CurrentPath;
+            OpenFolderCompare(active == LeftPanel ? cur.FullPath : otherDir, active == LeftPanel ? otherDir : cur.FullPath);
+            return;
+        }
+        string? other = File.Exists(sameName) ? sameName
+            : Other.CurrentItem is { IsDirectory: false, IsParent: false } oi ? oi.FullPath : null;
+        if (other == null)
+        {
+            var input = Dialogs.Input(this, "Порівняти з…", $"Порівняти «{cur.Name}» з файлом:", sameName);
+            if (ResolveInputPath(input) is not { } path) { active.FocusList(); return; }
+            if (!File.Exists(path)) { Dialogs.Error(this, $"Файл не знайдено:\n{path}"); return; }
+            other = path;
+        }
+        if (active == LeftPanel) OpenFileCompare(cur.FullPath, other);
+        else OpenFileCompare(other, cur.FullPath);
+    }
+
+    /// <summary>Shift+F2: каталоги обох панелей.</summary>
+    void CompareFolders() => OpenFolderCompare(LeftPanel.CurrentPath, RightPanel.CurrentPath);
+
+    void OpenFileCompare(string left, string right) =>
+        new Compare.TextCompareWindow(left, right) { Owner = this }.Show();
+
+    void OpenFolderCompare(string left, string right) =>
+        new Compare.FolderCompareWindow(left, right) { Owner = this }.Show();
+
     public void GoToFile(string path)
     {
         var dir = Path.GetDirectoryName(path);
@@ -899,5 +920,6 @@ public partial class MainWindow : Window
     void Hidden_Click(object s, RoutedEventArgs e) => ToggleHidden();
     void Terminal_Click(object s, RoutedEventArgs e) => OpenTerminal();
     void Palette_Click(object s, RoutedEventArgs e) => ShowPalette();
+    void Compare_Click(object s, RoutedEventArgs e) => CompareFiles();
     void Theme_Click(object s, RoutedEventArgs e) => CycleTheme();
 }
