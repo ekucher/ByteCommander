@@ -218,8 +218,19 @@ public sealed class FileOperationTests(TestWorkspace ws)
         using (var w = new StreamWriter(z.CreateEntry("Папка/Документ.txt").Open()))
             w.Write("1");
 
+        // Кодування імен береться з OEM-кодової сторінки поточної культури (uk-UA → 866, en-US → 437),
+        // тому фіксуємо культуру — інакше результат залежав би від мови Windows (напр. CI-раннера).
+        var saved = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("uk-UA");
         var op = Op(ConflictChoice.Overwrite);
-        op.Unpack(new[] { zip }, outDir, default);
+        try
+        {
+            op.Unpack(new[] { zip }, outDir, default);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = saved;
+        }
 
         Assert.Empty(op.Errors);
         Assert.True(File.Exists(Path.Combine(outDir, "Папка", "Документ.txt")));
