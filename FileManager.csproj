@@ -14,4 +14,12 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Тести — окремий проєкт; не підхоплювати їхні файли (і їхні obj/) у застосунок. -->
+    <Compile Remove="tests\**" />
+    <None Remove="tests\**" />
+    <Page Remove="tests\**" />
+    <InternalsVisibleTo Include="ByteCommander.Tests" />
+  </ItemGroup>
+
 </Project>

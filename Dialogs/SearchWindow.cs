@@ -236,7 +236,7 @@ public sealed class SearchWindow : Window
     /// Чи містить файл текст (без урахування регістру). Спершу UTF-8 / UTF-16 за BOM;
     /// якщо BOM немає, а шуканий текст не-ASCII, — ще Windows-1251 і CP866.
     /// </summary>
-    static bool FileContains(string path, string text, CancellationToken ct)
+    internal static bool FileContains(string path, string text, CancellationToken ct)
     {
         try
         {

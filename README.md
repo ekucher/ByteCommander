@@ -10,6 +10,14 @@ dotnet build -c Release
 .\bin\Release\net10.0-windows\ByteCommander.exe [лівий_каталог] [правий_каталог]
 ```
 
+Тести (xUnit: файлові операції, ZIP, пошук за вмістом, налаштування):
+
+```powershell
+dotnet test tests\ByteCommander.Tests
+```
+
+Тести міжтомних операцій тимчасово підключають робочий каталог як окремий диск через `subst` і знімають його після прогону. CI (GitHub Actions, `windows-latest`) збирає застосунок, проганяє тести й викладає зібраний застосунок як артефакт.
+
 Налаштування (вкладки, сортування, закладки, розмір вікна) зберігаються в `%APPDATA%\ByteCommander\settings.json`.
 
 ## Можливості
