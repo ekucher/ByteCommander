@@ -245,7 +245,7 @@ public sealed class FileOperation
 
     void CopyContent(string src, string dst, CancellationToken ct)
     {
-        using var input = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+        using var input = OpenShared(src, FileOptions.SequentialScan);
         using var output = new FileStream(dst, FileMode.Create, FileAccess.Write, FileShare.None, 1);
         try { output.SetLength(input.Length); } catch { }
         Pump(input, output, ct);
@@ -395,7 +395,7 @@ public sealed class FileOperation
                         var entry = zip.CreateEntry(e.rel, CompressionLevel.Optimal);
                         var t = File.GetLastWriteTime(e.full);
                         if (t.Year >= 1980 && t.Year <= 2107) entry.LastWriteTime = t;
-                        using var input = new FileStream(e.full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                        using var input = OpenShared(e.full, FileOptions.SequentialScan);
                         using var output = entry.Open();
                         Pump(input, output, ct);
                     }

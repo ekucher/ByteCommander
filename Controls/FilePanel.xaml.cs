@@ -571,7 +571,7 @@ public partial class FilePanel : UserControl
                 CrumbPanel.Children.Add(sep);
             }
             var target = segs[i].path;
-            var b = new Button { Content = new TextBlock { Text = segs[i].name }, Style = (Style)FindResource("CrumbButton") };
+            var b = new Button { Content = new TextBlock { Text = segs[i].name }, Style = (Style)FindResource(StyleKeys.CrumbButton) };
             if (i == segs.Count - 1) b.FontWeight = FontWeights.SemiBold;
             b.Click += (_, _) =>
             {

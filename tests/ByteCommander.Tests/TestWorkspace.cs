@@ -68,6 +68,16 @@ public sealed class TestWorkspace : IDisposable
         if (!Directory.Exists(link)) throw new InvalidOperationException("Не вдалося створити junction.");
     }
 
+    public static void CreateHardLink(string link, string target)
+    {
+        using var p = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /H \"{link}\" \"{target}\"")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        })!;
+        p.WaitForExit();
+        if (!File.Exists(link)) throw new InvalidOperationException("Не вдалося створити жорстке посилання.");
+    }
+
     static void RunSubst(string args)
     {
         using var p = Process.Start(new ProcessStartInfo("subst.exe", args) { UseShellExecute = false, CreateNoWindow = true })!;

@@ -91,6 +91,38 @@ public sealed class ReviewFixTests(TestWorkspace ws)
         Assert.True(TestWorkspace.NoTempFiles(Path.GetDirectoryName(p)!));
     }
 
+[Fact]
+    public void WriteViaTemp_KeepMetadata_OnHardLinkedFile_UpdatesAllNames()
+    {
+        // Заміна файлу (File.Replace) розірвала б жорстке посилання: друге ім'я лишилося б зі старим вмістом.
+        var a = WriteFile("hard-a.txt", Encoding.UTF8.GetBytes("old"));
+        var b = Path.Combine(Path.GetDirectoryName(a)!, "hard-b.txt");
+        if (File.Exists(b)) File.Delete(b);
+        TestWorkspace.CreateHardLink(b, a);
+        File.SetAttributes(a, FileAttributes.Hidden);
+
+        Util.WriteViaTemp(a, tmp => File.WriteAllText(tmp, "new content"), keepDestinationMetadata: true);
+
+        Assert.Equal("new content", File.ReadAllText(a));
+        Assert.Equal("new content", File.ReadAllText(b));
+        Assert.True(File.GetAttributes(a).HasFlag(FileAttributes.Hidden));
+        Assert.Equal(2, ByteCommander.Services.NativeMethods.HardLinkCount(a));
+        Assert.True(TestWorkspace.NoTempFiles(Path.GetDirectoryName(a)!));
+    }
+
+    [Fact]
+    public void WriteViaTemp_KeepMetadata_ShorterContent_TruncatesHardLinkedFile()
+    {
+        var a = WriteFile("hard-short.txt", Encoding.UTF8.GetBytes("a much longer original text"));
+        var b = Path.Combine(Path.GetDirectoryName(a)!, "hard-short-b.txt");
+        if (File.Exists(b)) File.Delete(b);
+        TestWorkspace.CreateHardLink(b, a);
+
+        Util.WriteViaTemp(a, tmp => File.WriteAllText(tmp, "short"), keepDestinationMetadata: true);
+
+        Assert.Equal("short", File.ReadAllText(b));
+    }
+
     [Fact]
     public void WriteViaTemp_WhenWriteFails_LeavesOriginalIntact()
     {
@@ -128,6 +160,16 @@ public sealed class TextEncodingsTests
         Assert.Equal(expected, TextEncodings.NameOf(TextEncodings.Detect(head, truncated: false)));
     }
 
+    [Theory]
+    [InlineData(new byte[] { 0xFF, 0xFE }, false)]
+    [InlineData(new byte[] { 0xFE, 0xFF }, true)]
+    public void Utf16Bom_IsRecognised(byte[] head, bool bigEndian)
+    {
+        Assert.Equal(bigEndian, TextEncodings.Utf16BomBigEndian(head));
+        Assert.False(TextEncodings.LooksBinary(head.Concat(new byte[] { 0x41, 0x00 }).ToArray()));
+        Assert.Equal(bigEndian ? "UTF-16 BE" : "UTF-16 LE", TextEncodings.NameOf(TextEncodings.Detect(head, truncated: false)));
+    }
+
     [Fact]
     public void PreambleLength_SkipsUtf8BomEvenForUtf8WithoutBom()
     {
@@ -140,6 +182,20 @@ public sealed class TextEncodingsTests
 
 public sealed class ThemeKeysTests
 {
+    [Fact]
+    public void EveryStyleKeyConstant_IsDefinedInControlsXaml()
+    {
+        var constants = typeof(StyleKeys).GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(f => f.IsLiteral).Select(f => (string)f.GetRawConstantValue()!).ToList();
+        Assert.NotEmpty(constants);
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "FileManager.csproj"))) dir = dir.Parent;
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var keys = XDocument.Load(Path.Combine(dir!.FullName, "Themes", "Controls.xaml")).Root!.Elements()
+            .Select(e => (string?)e.Attribute(x + "Key")).ToHashSet();
+        foreach (var c in constants) Assert.Contains(c, keys);
+    }
+
     [Fact]
     public void EveryThemeKeyConstant_ExistsInBothPalettes()
     {

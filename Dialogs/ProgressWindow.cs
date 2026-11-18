@@ -33,8 +33,6 @@ public sealed class ProgressWindow : Window
         Owner = owner;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Util.ApplyWindowTheme(this);
-        FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
-        FontSize = 13;
 
         file.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
         stats.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);

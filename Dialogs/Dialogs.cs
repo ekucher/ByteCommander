@@ -17,8 +17,6 @@ public static class Dialogs
             ResizeMode = ResizeMode.NoResize,
             SizeToContent = SizeToContent.WidthAndHeight,
             ShowInTaskbar = false,
-            FontFamily = (FontFamily)Application.Current!.FindResource("UiFont"),
-            FontSize = 13,
             UseLayoutRounding = true,
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
         };
@@ -47,7 +45,7 @@ public static class Dialogs
             var b = new Button { Content = labels[i], MinWidth = 100, Margin = new Thickness(8, 0, 0, 0), IsDefault = i == def };
             if (i == def)
             {
-                b.Style = (Style)Application.Current.FindResource("AccentButton");
+                b.Style = Util.Resource<Style>(StyleKeys.AccentButton);
                 defaultButton = b;
             }
             b.Click += (_, _) => { onClick(idx); w.Close(); };

@@ -174,7 +174,7 @@ public sealed class LargeFileView : Grid
         public RowsPresenter(LargeFileView owner)
         {
             this.owner = owner;
-            var family = (FontFamily?)Application.Current?.TryFindResource("MonoFont") ?? new FontFamily("Consolas");
+            var family = (FontFamily?)Application.Current?.TryFindResource(StyleKeys.MonoFont) ?? new FontFamily("Consolas");
             typeface = new Typeface(family, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
             var probe = Text("M", Brushes.Black);
             CharWidth = probe.WidthIncludingTrailingWhitespace;

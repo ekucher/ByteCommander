@@ -248,7 +248,7 @@ public partial class MainWindow : Window
             var labelText = new TextBlock { Text = label };
             labelText.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
             sp.Children.Add(labelText);
-            var b = new Button { Content = sp, Style = (Style)FindResource("FKeyButton"), ToolTip = cmd.Title };
+            var b = new Button { Content = sp, Style = (Style)FindResource(StyleKeys.FKeyButton), ToolTip = cmd.Title };
             b.Click += (_, _) => cmd.Run();
             FKeyBar.Children.Add(b);
         }
@@ -419,13 +419,13 @@ public partial class MainWindow : Window
             active.CalcSize(it);
             return;
         }
-        new ViewerWindow(it.FullPath, false) { Owner = this }.Show();
+        new ViewerWindow(it.FullPath, ViewerMode.View) { Owner = this }.Show();
     }
 
     void Edit()
     {
         if (active.CurrentItem is not { IsParent: false, IsDirectory: false } it) return;
-        new ViewerWindow(it.FullPath, true) { Owner = this }.Show();
+        new ViewerWindow(it.FullPath, ViewerMode.Edit) { Owner = this }.Show();
     }
 
     void NewFile()
@@ -439,7 +439,7 @@ public partial class MainWindow : Window
             if (!File.Exists(full)) File.WriteAllBytes(full, Array.Empty<byte>());
             active.Refresh();
             active.SelectByName(Path.GetFileName(full));
-            new ViewerWindow(full, true) { Owner = this }.Show();
+            new ViewerWindow(full, ViewerMode.Edit) { Owner = this }.Show();
         }
         catch (Exception ex)
         {

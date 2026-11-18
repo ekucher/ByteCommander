@@ -10,6 +10,9 @@ using ByteCommander.Viewer;
 
 namespace ByteCommander;
 
+/// <summary>Переглядач (F3, лише читання) чи редактор (F4).</summary>
+public enum ViewerMode { View, Edit }
+
 /// <summary>
 /// Переглядач (F3) і простий редактор (F4).
 /// Невеликі текстові файли — у звичайному TextBox (виділення, копіювання, редагування);
@@ -23,7 +26,8 @@ public sealed class ViewerWindow : Window
     /// <summary>До цього розміру текст відкривається в TextBox (і в редакторі); більші — віртуально.</summary>
     const int MaxTextBoxBytes = 8 * 1024 * 1024;
 
-    enum Mode { Text, Large, Image }
+    /// <summary>Що зараз показано: текстове поле, віртуальний перегляд чи зображення.</summary>
+    enum Display { Text, Large, Image }
 
     string path;
     readonly bool edit;
@@ -36,14 +40,14 @@ public sealed class ViewerWindow : Window
     readonly Button encButton, wrapButton, hexButton, saveButton;
     Encoding enc = new UTF8Encoding(false);
     bool encChosen, hex, hexDecided, dirty, loading;
-    Mode mode;
+    Display display;
     CancellationTokenSource? findCts;
     string baseInfo = "";
 
-    public ViewerWindow(string path, bool edit)
+    public ViewerWindow(string path, ViewerMode mode)
     {
         this.path = path;
-        this.edit = edit;
+        edit = mode == ViewerMode.Edit;
         Width = 1040;
         Height = 740;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -52,7 +56,7 @@ public sealed class ViewerWindow : Window
 
         text = new TextBox
         {
-            FontFamily = (FontFamily)Application.Current.FindResource("MonoFont"),
+            FontFamily = Util.Resource<FontFamily>(StyleKeys.MonoFont),
             FontSize = 13,
             AcceptsReturn = true,
             AcceptsTab = true,
@@ -117,7 +121,7 @@ public sealed class ViewerWindow : Window
         findBox.TextChanged += (_, _) =>
         {
             findBox.ClearValue(BorderBrushProperty);
-            if (mode == Mode.Large) large.ClearMatch();
+            if (display == Display.Large) large.ClearMatch();
         };
 
         info.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
@@ -198,14 +202,14 @@ public sealed class ViewerWindow : Window
             loading = false;
             info.Text = "Помилка: " + ex.Message;
         }
-        hexButton.Visibility = edit || mode == Mode.Image ? Visibility.Collapsed : Visibility.Visible;
-        encButton.Visibility = mode == Mode.Image || hex ? Visibility.Collapsed : Visibility.Visible;
-        wrapButton.Visibility = mode == Mode.Text ? Visibility.Visible : Visibility.Collapsed;
+        hexButton.Visibility = edit || display == Display.Image ? Visibility.Collapsed : Visibility.Visible;
+        encButton.Visibility = display == Display.Image || hex ? Visibility.Collapsed : Visibility.Visible;
+        wrapButton.Visibility = display == Display.Text ? Visibility.Visible : Visibility.Collapsed;
     }
 
     void ShowSmallText(FileInfo fi)
     {
-        SetContent(Mode.Text, text);
+        SetContent(Display.Text, text);
         var bytes = ReadHead((int)fi.Length);
         loading = true;
         text.Text = Decode(bytes);
@@ -218,7 +222,7 @@ public sealed class ViewerWindow : Window
 
     void ShowLarge(FileInfo fi)
     {
-        SetContent(Mode.Large, large);
+        SetContent(Display.Large, large);
         baseInfo = $"{Util.FormatSize(fi.Length)}  ·  {(hex ? "HEX" : TextEncodings.NameOf(enc))}";
         large.SetSource(hex ? new HexRowSource(path) : new TextRowSource(path, enc));
         large.Focus();
@@ -226,14 +230,16 @@ public sealed class ViewerWindow : Window
 
     void UpdateLargeInfo()
     {
-        if (mode != Mode.Large || large.Source is not { } src) return;
+        if (display != Display.Large || large.Source is not { } src) return;
         info.Text = $"{baseInfo}  ·  {src.RowCount:N0} рядків" + (src.IsComplete ? "" : "  ·  індексація…");
     }
 
-    void SetContent(Mode m, UIElement element)
+    void SetContent(Display m, UIElement element)
     {
-        if (mode == Mode.Large && m != Mode.Large) large.SetSource(null);
-        mode = m;
+        // Новий вміст (hex / кодування / інший файл) — незавершений пошук по старому вже не актуальний.
+        findCts?.Cancel();
+        if (display == Display.Large && m != Display.Large) large.SetSource(null);
+        display = m;
         if (content.Children.Count == 1 && content.Children[0] == element) return;
         content.Children.Clear();
         content.Children.Add(element);
@@ -262,7 +268,7 @@ public sealed class ViewerWindow : Window
             bmp.Freeze();
             var img = new Image { Source = bmp, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, Margin = new Thickness(8) };
             RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-            SetContent(Mode.Image, img);
+            SetContent(Display.Image, img);
             info.Text = $"{bmp.PixelWidth} × {bmp.PixelHeight} px  ·  {Util.FormatSize(new FileInfo(path).Length)}  ·  ← → — попереднє / наступне зображення";
             UpdateTitle();
             return true;
@@ -323,7 +329,7 @@ public sealed class ViewerWindow : Window
 
     void ToggleHex()
     {
-        if (edit || mode == Mode.Image) return;
+        if (edit || display == Display.Image) return;
         hex = !hex;
         hexDecided = true;
         Load();
@@ -332,7 +338,7 @@ public sealed class ViewerWindow : Window
     void ShowFind()
     {
         findBar.Visibility = Visibility.Visible;
-        if (mode == Mode.Text && text.SelectionLength > 0 && text.SelectionLength < 200) findBox.Text = text.SelectedText;
+        if (display == Display.Text && text.SelectionLength > 0 && text.SelectionLength < 200) findBox.Text = text.SelectedText;
         findBox.Focus();
         findBox.SelectAll();
     }
@@ -341,8 +347,8 @@ public sealed class ViewerWindow : Window
     {
         var q = findBox.Text;
         if (q.Length == 0) return;
-        if (mode == Mode.Large) _ = FindNextLarge(q);
-        else if (mode == Mode.Text) FindNextText(q);
+        if (display == Display.Large) _ = FindNextLarge(q);
+        else if (display == Display.Text) FindNextText(q);
     }
 
     void FindNextText(string q)
@@ -385,7 +391,7 @@ public sealed class ViewerWindow : Window
             if (found is { } f)
             {
                 // Пошук іде по файлу незалежно від індексу; прокрутка ж обмежена вже проіндексованими рядками.
-                while (!src.IsComplete && src.RowCount <= f.Row + 1)
+                while (large.Source == src && !src.IsComplete && src.RowCount <= f.Row + 1)
                 {
                     info.Text = $"Знайдено в рядку {f.Row + 1:N0} — чекаю індексацію ({src.RowCount:N0})…  ·  Esc — зупинити";
                     await Task.Delay(100, cts.Token);
@@ -456,7 +462,7 @@ public sealed class ViewerWindow : Window
                 else if (findBar.Visibility == Visibility.Visible)
                 {
                     findBar.Visibility = Visibility.Collapsed;
-                    if (mode == Mode.Large) large.Focus(); else text.Focus();
+                    if (display == Display.Large) large.Focus(); else text.Focus();
                 }
                 else Close();
                 e.Handled = true;
@@ -479,11 +485,11 @@ public sealed class ViewerWindow : Window
                 Save();
                 e.Handled = true;
                 break;
-            case Key.Right or Key.PageDown or Key.Space when mode == Mode.Image:
+            case Key.Right or Key.PageDown or Key.Space when display == Display.Image:
                 NextImage(1);
                 e.Handled = true;
                 break;
-            case Key.Left or Key.PageUp or Key.Back when mode == Mode.Image:
+            case Key.Left or Key.PageUp or Key.Back when display == Display.Image:
                 NextImage(-1);
                 e.Handled = true;
                 break;

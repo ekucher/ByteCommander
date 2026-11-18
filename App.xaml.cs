@@ -40,7 +40,7 @@ public partial class App : Application
                 return;
             }
             ShutdownMode = ShutdownMode.OnLastWindowClose;
-            new ViewerWindow(file, false) { WindowStartupLocation = WindowStartupLocation.CenterScreen }.Show();
+            new ViewerWindow(file, ViewerMode.View) { WindowStartupLocation = WindowStartupLocation.CenterScreen }.Show();
             return;
         }
 

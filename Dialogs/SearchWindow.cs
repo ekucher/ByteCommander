@@ -47,8 +47,6 @@ public sealed class SearchWindow : Window
         Height = 640;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Util.ApplyWindowTheme(this);
-        FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
-        FontSize = 13;
         UseLayoutRounding = true;
         where.Text = startDir;
         status.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
@@ -72,7 +70,7 @@ public sealed class SearchWindow : Window
         Row(1, "Ім’я / маска:", mask, "Наприклад: *.cs; *.xaml  або просто частина імені");
         Row(2, "Містить текст:", needle, "Необов’язково. Без урахування регістру; UTF-8, UTF-16, а також Windows-1251 / CP866");
 
-        go = new Button { Content = "Знайти", MinWidth = 120, IsDefault = true, Style = (Style)Application.Current.FindResource("AccentButton") };
+        go = new Button { Content = "Знайти", MinWidth = 120, IsDefault = true, Style = Util.Resource<Style>(StyleKeys.AccentButton) };
         go.Click += (_, _) => StartOrStop();
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 8, 0, 0) };
         actions.Children.Add(subdirs);
@@ -134,11 +132,11 @@ public sealed class SearchWindow : Window
                 e.Handled = true;
                 break;
             case Key.F3 when !h.IsDirectory:
-                new ViewerWindow(h.FullPath, false) { Owner = this }.Show();
+                new ViewerWindow(h.FullPath, ViewerMode.View) { Owner = this }.Show();
                 e.Handled = true;
                 break;
             case Key.F4 when !h.IsDirectory:
-                new ViewerWindow(h.FullPath, true) { Owner = this }.Show();
+                new ViewerWindow(h.FullPath, ViewerMode.Edit) { Owner = this }.Show();
                 e.Handled = true;
                 break;
         }
@@ -229,9 +227,6 @@ public sealed class SearchWindow : Window
         }
     }
 
-    // Кодування для файлів без BOM, у яких текст не знайшовся як UTF-8 (типові для кирилиці у Windows).
-    static readonly Lazy<Encoding[]> LegacyEncodings = new(() => new[] { Encoding.GetEncoding(1251), Encoding.GetEncoding(866) });
-
     /// <summary>
     /// Чи містить файл текст (без урахування регістру). Спершу UTF-8 / UTF-16 за BOM;
     /// якщо BOM немає, а шуканий текст не-ASCII, — ще Windows-1251 і CP866.
@@ -243,7 +238,7 @@ public sealed class SearchWindow : Window
             if (new FileInfo(path).Length > 256L * 1024 * 1024) return false;
             if (Scan(path, text, Encoding.UTF8, detectBom: true, ct, out bool hadBom)) return true;
             if (hadBom || text.All(c => c < 128)) return false;
-            foreach (var enc in LegacyEncodings.Value)
+            foreach (var enc in TextEncodings.LegacyCyrillic)
                 if (Scan(path, text, enc, detectBom: false, ct, out _)) return true;
         }
         catch (OperationCanceledException) { throw; }
@@ -253,7 +248,7 @@ public sealed class SearchWindow : Window
 
     static bool Scan(string path, string text, Encoding encoding, bool detectBom, CancellationToken ct, out bool hadBom)
     {
-        using var sr = new StreamReader(path, encoding, detectBom, bufferSize: 1 << 16);
+        using var sr = new StreamReader(Util.OpenShared(path, FileOptions.SequentialScan), encoding, detectBom, bufferSize: 1 << 16);
         var buf = new char[1 << 16];
         string carry = "";
         int n;
@@ -265,7 +260,7 @@ public sealed class SearchWindow : Window
             if (first)
             {
                 // StreamReader змінює CurrentEncoding лише якщо знайшов BOM (UTF-8 з BOM, UTF-16, UTF-32)
-                hadBom = detectBom && (sr.CurrentEncoding is not UTF8Encoding || HasUtf8Bom(path));
+                hadBom = detectBom && (sr.CurrentEncoding is not UTF8Encoding || TextEncodings.FileHasUtf8Bom(path));
                 first = false;
             }
             var chunk = carry + new string(buf, 0, n);
@@ -274,12 +269,5 @@ public sealed class SearchWindow : Window
             carry = chunk[^keep..];
         }
         return false;
-    }
-
-    static bool HasUtf8Bom(string path)
-    {
-        Span<byte> b = stackalloc byte[3];
-        using var fs = Util.OpenShared(path);
-        return TextEncodings.HasUtf8Bom(b[..fs.ReadAtLeast(b, b.Length, throwOnEndOfStream: false)]);
     }
 }

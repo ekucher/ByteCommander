@@ -100,6 +100,25 @@ public static class NativeMethods
         ShellExecuteEx(ref info);
     }
 
+    // ---------- Жорсткі посилання ----------
+    [StructLayout(LayoutKind.Sequential)]
+    struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime, LastAccessTime, LastWriteTime;
+        public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION info);
+
+    /// <summary>Скільки імен (жорстких посилань) має файл; 1 — звичайний файл.</summary>
+    public static int HardLinkCount(string path)
+    {
+        using var fs = Util.OpenShared(path);
+        return GetFileInformationByHandle(fs.SafeFileHandle, out var info) ? (int)info.NumberOfLinks : 1;
+    }
+
     // ---------- Темний заголовок вікна ----------
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);

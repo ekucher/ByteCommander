@@ -29,8 +29,7 @@ public sealed class PaletteWindow : Window
         SetResourceReference(BorderBrushProperty, ThemeKeys.AccentBrush);
         BorderThickness = new Thickness(1);
         SetResourceReference(ForegroundProperty, ThemeKeys.TextBrush);
-        FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
-        FontSize = 13;
+        Util.ApplyUiFont(this);
         UseLayoutRounding = true;
         WindowStartupLocation = WindowStartupLocation.Manual;
 

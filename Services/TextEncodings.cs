@@ -8,9 +8,19 @@ namespace ByteCommander.Services;
 /// </summary>
 public static class TextEncodings
 {
-    public sealed record Choice(string Name, Func<Encoding> Create);
+    public sealed record Choice(string Name, Func<Encoding> Create)
+    {
+        /// <summary>Це кодування (з урахуванням BOM): так меню знає, який пункт позначити.</summary>
+        public bool Matches(Encoding e)
+        {
+            var mine = Create();
+            return mine.CodePage == e.CodePage && mine.GetPreamble().Length == e.GetPreamble().Length;
+        }
+    }
 
-    /// <summary>Кодування, які можна вибрати в переглядачі (у цьому порядку в меню).</summary>
+    const int Utf16BigEndianCodePage = 1201;
+
+    /// <summary>Кодування, які знає переглядач (у цьому порядку в меню). Єдине джерело назв.</summary>
     public static readonly IReadOnlyList<Choice> Choices = new Choice[]
     {
         new("UTF-8", () => new UTF8Encoding(false)),
@@ -19,20 +29,38 @@ public static class TextEncodings
         new("DOS-866", () => Encoding.GetEncoding(866)),
         new("KOI8-U", () => Encoding.GetEncoding(21866)),
         new("UTF-16 LE", () => new UnicodeEncoding(false, true)),
+        new("UTF-16 BE", () => new UnicodeEncoding(true, true)),
     };
+
+    /// <summary>
+    /// Кирилічні кодування без BOM, у яких варто шукати текст, якщо він не знайшовся як UTF-8
+    /// (типові для старих файлів у Windows і DOS).
+    /// </summary>
+    public static IReadOnlyList<Encoding> LegacyCyrillic => legacy.Value;
+    static readonly Lazy<Encoding[]> legacy = new(() => new[] { Encoding.GetEncoding(1251), Encoding.GetEncoding(866) });
 
     public static bool IsUtf16(Encoding e) => e is UnicodeEncoding;
-    public static bool IsUtf16BigEndian(Encoding e) => e.CodePage == 1201;
+    public static bool IsUtf16BigEndian(Encoding e) => e.CodePage == Utf16BigEndianCodePage;
 
-    public static string NameOf(Encoding e) => e switch
-    {
-        UTF8Encoding u => u.GetPreamble().Length > 0 ? "UTF-8 BOM" : "UTF-8",
-        UnicodeEncoding => IsUtf16BigEndian(e) ? "UTF-16 BE" : "UTF-16 LE",
-        _ => e.CodePage switch { 1251 => "Windows-1251", 866 => "DOS-866", 21866 => "KOI8-U", _ => e.WebName },
-    };
+    public static string NameOf(Encoding e) => Choices.FirstOrDefault(c => c.Matches(e))?.Name ?? e.WebName;
 
     public static bool HasUtf8Bom(ReadOnlySpan<byte> head) =>
         head.Length >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF;
+
+    /// <summary>UTF-16 BOM: LE (FF FE) чи BE (FE FF); null — немає.</summary>
+    public static bool? Utf16BomBigEndian(ReadOnlySpan<byte> head) =>
+        head.Length < 2 ? null
+        : head[0] == 0xFF && head[1] == 0xFE ? false
+        : head[0] == 0xFE && head[1] == 0xFF ? true
+        : null;
+
+    /// <summary>Чи починається файл з UTF-8 BOM (читає лише перші 3 байти).</summary>
+    public static bool FileHasUtf8Bom(string path)
+    {
+        Span<byte> b = stackalloc byte[3];
+        using var fs = Util.OpenShared(path);
+        return HasUtf8Bom(b[..fs.ReadAtLeast(b, b.Length, throwOnEndOfStream: false)]);
+    }
 
     /// <summary>
     /// Скільки байтів на початку — BOM, який треба пропустити при читанні цим кодуванням.
@@ -51,8 +79,7 @@ public static class TextEncodings
     public static Encoding Detect(ReadOnlySpan<byte> head, bool truncated)
     {
         if (HasUtf8Bom(head)) return new UTF8Encoding(true);
-        if (head.Length >= 2 && head[0] == 0xFF && head[1] == 0xFE) return new UnicodeEncoding(false, true);
-        if (head.Length >= 2 && head[0] == 0xFE && head[1] == 0xFF) return new UnicodeEncoding(true, true);
+        if (Utf16BomBigEndian(head) is bool bigEndian) return new UnicodeEncoding(bigEndian, true);
         try
         {
             int len = truncated ? Math.Max(0, head.Length - 4) : head.Length;
@@ -68,7 +95,7 @@ public static class TextEncodings
     /// <summary>Двійковий файл: є нульові байти в перших 8 КБ (UTF-16 з BOM — не двійковий).</summary>
     public static bool LooksBinary(ReadOnlySpan<byte> head)
     {
-        if (head.Length >= 2 && ((head[0] == 0xFF && head[1] == 0xFE) || (head[0] == 0xFE && head[1] == 0xFF))) return false;
+        if (Utf16BomBigEndian(head) != null) return false;
         return head[..Math.Min(head.Length, 8192)].IndexOf((byte)0) >= 0;
     }
 

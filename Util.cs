@@ -104,8 +104,10 @@ public static class Util
     /// замінює ним призначення. При збої чи скасуванні наявний файл лишається недоторканим.
     /// </summary>
     /// <param name="keepDestinationMetadata">
-    /// Зберегти атрибути, дату створення й права наявного файлу (File.Replace) — для редагування на місці.
-    /// Інакше призначення просто замінюється (атрибути виставляє той, хто викликає).
+    /// Редагування наявного файлу на місці: зберегти його атрибути, дату створення й права (File.Replace).
+    /// Якщо в файлу є інші імена — жорсткі посилання чи він сам символьне посилання, — заміна розірвала б
+    /// зв’язок, тож готовий вміст копіюється поверх наявного файлу (його бачать усі імена).
+    /// Без цього прапорця призначення просто замінюється (атрибути виставляє той, хто викликає).
     /// </param>
     public static void WriteViaTemp(string dst, Action<string> write, bool keepDestinationMetadata = false)
     {
@@ -115,7 +117,8 @@ public static class Util
             write(tmp);
             if (File.Exists(dst) && keepDestinationMetadata)
             {
-                File.Replace(tmp, dst, null, ignoreMetadataErrors: true);
+                if (HasOtherNames(dst)) OverwriteInPlace(tmp, dst);
+                else File.Replace(tmp, dst, null, ignoreMetadataErrors: true);
                 return;
             }
             if (File.Exists(dst)) ClearReadOnly(dst);
@@ -125,6 +128,31 @@ public static class Util
         {
             TryDelete(tmp);
         }
+    }
+
+    /// <summary>До вмісту файлу ведуть інші імена: він — символьне посилання або має кілька жорстких посилань.</summary>
+    static bool HasOtherNames(string path)
+    {
+        try
+        {
+            return new FileInfo(path).LinkTarget != null || Services.NativeMethods.HardLinkCount(path) > 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Переписати вміст наявного файлу (вже повністю підготовленим тимчасовим) без заміни самого файлу.
+    /// Відкриття з FileMode.Open іде за символьним посиланням до цілі.
+    /// </summary>
+    static void OverwriteInPlace(string source, string dst)
+    {
+        using var input = OpenShared(source, FileOptions.SequentialScan);
+        using var output = new FileStream(dst, FileMode.Open, FileAccess.Write, FileShare.Read);
+        input.CopyTo(output);
+        output.SetLength(output.Position);
     }
 
     public static void ClearReadOnly(string path)
@@ -172,9 +200,20 @@ public static class Util
     {
         w.SetResourceReference(Control.BackgroundProperty, ThemeKeys.BgBrush);
         w.SetResourceReference(Control.ForegroundProperty, ThemeKeys.TextBrush);
+        ApplyUiFont(w);
     }
 
-    public static FontFamily IconFont => (FontFamily)Application.Current.FindResource("IconFont");
+    /// <summary>Шрифт інтерфейсу застосунку (як у головному вікні).</summary>
+    public static void ApplyUiFont(Control c)
+    {
+        c.FontFamily = Resource<FontFamily>(StyleKeys.UiFont);
+        c.FontSize = 13;
+    }
+
+    /// <summary>Ресурс застосунку за ключем (див. <see cref="ThemeKeys"/>, <see cref="StyleKeys"/>).</summary>
+    public static T Resource<T>(string key) => (T)Application.Current.FindResource(key);
+
+    public static FontFamily IconFont => Resource<FontFamily>(StyleKeys.IconFont);
 
     public static TextBlock Glyph(string glyph, double size = 14) => new()
     {
