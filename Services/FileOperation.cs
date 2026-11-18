@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Globalization;
+using System.Text;
 using System.IO.Compression;
 
 namespace ByteCommander.Services;
@@ -134,9 +136,13 @@ public sealed class FileOperation
         ct.ThrowIfCancellationRequested();
         var di = new DirectoryInfo(src);
         if (File.Exists(dst)) { Errors.Add($"{dst}: вже існує файл з таким ім’ям"); return false; }
-        if (depth > 0 && di.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        // Посилання/з’єднання: вкладені не обходимо ніколи; саме вибране — можна скопіювати вміст,
+        // але не переміщувати на інший диск: це видалило б справжні файли цілі посилання.
+        if (di.Attributes.HasFlag(FileAttributes.ReparsePoint) && (depth > 0 || move))
         {
-            Errors.Add($"{src}: символьне посилання / точку з’єднання пропущено");
+            Errors.Add(depth > 0
+                ? $"{src}: символьне посилання / точку з’єднання пропущено"
+                : $"{src}: це посилання / точка з’єднання — переміщення на інший диск не підтримується (скопіюйте його вміст)");
             return false;
         }
 
@@ -202,25 +208,27 @@ public sealed class FileOperation
                 case ConflictChoice.Skip: SkipProgress(len); return false;
                 case ConflictChoice.Cancel: throw new OperationCanceledException();
                 case ConflictChoice.Rename: dst = UniqueName(dst); break;
-                default: ClearReadOnly(dst); break;
             }
         }
 
         long before = st.DoneBytes;
-        bool copied = false;
         try
         {
             if (move && Util.SameVolume(src, dst))
             {
+                // MoveFileEx атомарний: при збої наявний файл призначення лишається цілим.
+                if (File.Exists(dst)) ClearReadOnly(dst);
                 File.Move(src, dst, overwrite: true);
                 st.DoneBytes += len;
             }
             else
             {
-                CopyContent(src, dst, ct);
-                copied = true;
-                File.SetCreationTimeUtc(dst, File.GetCreationTimeUtc(src));
-                File.SetLastWriteTimeUtc(dst, File.GetLastWriteTimeUtc(src));
+                WriteViaTemp(dst, tmp =>
+                {
+                    CopyContent(src, tmp, ct);
+                    File.SetCreationTimeUtc(tmp, File.GetCreationTimeUtc(src));
+                    File.SetLastWriteTimeUtc(tmp, File.GetLastWriteTimeUtc(src));
+                });
                 File.SetAttributes(dst, File.GetAttributes(src) & CopyableAttrs);
                 if (move)
                 {
@@ -233,12 +241,10 @@ public sealed class FileOperation
         }
         catch (OperationCanceledException)
         {
-            TryDelete(dst);
             throw;
         }
         catch (Exception ex)
         {
-            if (!copied) TryDelete(dst);
             Errors.Add($"{src}: {ex.Message}");
             st.DoneBytes = before + len;
             st.DoneFiles++;
@@ -433,7 +439,7 @@ public sealed class FileOperation
         {
             try
             {
-                using var a = ZipFile.OpenRead(z);
+                using var a = ZipFile.Open(z, ZipArchiveMode.Read, ZipNameEncoding);
                 foreach (var e in a.Entries)
                 {
                     st.TotalBytes += e.Length;
@@ -452,7 +458,7 @@ public sealed class FileOperation
         foreach (var z in zips)
         {
             ZipArchive archive;
-            try { archive = ZipFile.OpenRead(z); }
+            try { archive = ZipFile.Open(z, ZipArchiveMode.Read, ZipNameEncoding); }
             catch { continue; }
 
             using (archive)
@@ -482,16 +488,17 @@ public sealed class FileOperation
                             if (c == ConflictChoice.Cancel) throw new OperationCanceledException();
                             if (c == ConflictChoice.Skip) { SkipProgress(e.Length); continue; }
                             if (c == ConflictChoice.Rename) target = UniqueName(target);
-                            else ClearReadOnly(target);
                         }
-                        using (var input = e.Open())
-                        using (var output = new FileStream(target, FileMode.Create, FileAccess.Write))
-                            Pump(input, output, ct);
-                        File.SetLastWriteTime(target, e.LastWriteTime.DateTime);
+                        WriteViaTemp(target, tmp =>
+                        {
+                            using (var input = e.Open())
+                            using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write))
+                                Pump(input, output, ct);
+                            File.SetLastWriteTime(tmp, e.LastWriteTime.DateTime);
+                        });
                     }
                     catch (OperationCanceledException)
                     {
-                        TryDelete(target);
                         throw;
                     }
                     catch (Exception ex)
@@ -544,6 +551,35 @@ public sealed class FileOperation
     static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    /// <summary>
+    /// Пише новий вміст у тимчасовий файл поруч із <paramref name="dst"/> і лише після успіху
+    /// атомарно замінює ним призначення. При збої чи скасуванні наявний файл лишається недоторканим.
+    /// </summary>
+    static void WriteViaTemp(string dst, Action<string> write)
+    {
+        var tmp = Path.Combine(Path.GetDirectoryName(dst)!, $".{Path.GetFileName(dst)}.{Guid.NewGuid():N}.bctmp");
+        try
+        {
+            write(tmp);
+            if (File.Exists(dst)) ClearReadOnly(dst);
+            File.Move(tmp, dst, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(tmp);
+        }
+    }
+
+    /// <summary>Кодування імен для ZIP без прапорця UTF-8 (Провідник пише їх у OEM-кодуванні, для uk-UA — CP866).</summary>
+    static Encoding ZipNameEncoding
+    {
+        get
+        {
+            try { return Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage); }
+            catch { return Encoding.GetEncoding(866); }
+        }
     }
 
     /// <summary>"файл.txt" → "файл (2).txt"; із суфіксом: "файл - копія.txt", "файл - копія (2).txt".</summary>
