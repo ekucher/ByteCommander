@@ -17,13 +17,12 @@ public static class Dialogs
             ResizeMode = ResizeMode.NoResize,
             SizeToContent = SizeToContent.WidthAndHeight,
             ShowInTaskbar = false,
-            Background = Util.Res("BgBrush"),
-            Foreground = Util.Res("TextBrush"),
             FontFamily = (FontFamily)Application.Current!.FindResource("UiFont"),
             FontSize = 13,
             UseLayoutRounding = true,
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
         };
+        Util.ApplyWindowTheme(w);
         if (owner != null && owner.IsVisible)
         {
             w.Owner = owner;

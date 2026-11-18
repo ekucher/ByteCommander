@@ -29,6 +29,7 @@ public sealed class AppSettings
     public PanelState Right { get; set; } = new();
     public bool RightPanelActive { get; set; }
     public bool ShowHidden { get; set; }
+    public AppTheme Theme { get; set; } = AppTheme.System;
     public List<string> Bookmarks { get; set; } = new();
     public List<string> CommandHistory { get; set; } = new();
     public WindowBounds? Window { get; set; }

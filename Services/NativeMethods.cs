@@ -104,14 +104,18 @@ public static class NativeMethods
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-    public static void ApplyDarkChrome(Window w)
+    /// <summary>Заголовок вікна під поточну тему: темний/світлий режим і колір тла застосунку.</summary>
+    public static void ApplyChrome(Window w)
     {
         var h = new WindowInteropHelper(w).Handle;
         if (h == IntPtr.Zero) return;
-        int on = 1;
-        DwmSetWindowAttribute(h, 20, ref on, sizeof(int));       // DWMWA_USE_IMMERSIVE_DARK_MODE
-        int caption = 0x001F1C1B;                                // #1B1C1F у форматі COLORREF (BGR)
-        DwmSetWindowAttribute(h, 35, ref caption, sizeof(int));  // DWMWA_CAPTION_COLOR (Windows 11)
+        int dark = ThemeManager.IsDark ? 1 : 0;
+        DwmSetWindowAttribute(h, 20, ref dark, sizeof(int));     // DWMWA_USE_IMMERSIVE_DARK_MODE
+        if (Application.Current?.TryFindResource("BgBrush") is System.Windows.Media.SolidColorBrush bg)
+        {
+            int caption = bg.Color.R | bg.Color.G << 8 | bg.Color.B << 16;   // COLORREF (0x00BBGGRR)
+            DwmSetWindowAttribute(h, 35, ref caption, sizeof(int));          // DWMWA_CAPTION_COLOR (Windows 11)
+        }
         int round = 2;
         DwmSetWindowAttribute(h, 33, ref round, sizeof(int));    // DWMWA_WINDOW_CORNER_PREFERENCE = ROUND
     }

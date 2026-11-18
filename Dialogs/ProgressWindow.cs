@@ -32,12 +32,12 @@ public sealed class ProgressWindow : Window
         ShowInTaskbar = false;
         Owner = owner;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = Util.Res("BgBrush");
-        Foreground = Util.Res("TextBrush");
+        Util.ApplyWindowTheme(this);
         FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
         FontSize = 13;
 
-        file.Foreground = stats.Foreground = Util.Res("TextDimBrush");
+        file.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        stats.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
         var cancel = new Button { Content = "Скасувати", HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 110, Margin = new Thickness(0, 18, 0, 0) };
         cancel.Click += (_, _) =>
         {

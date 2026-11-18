@@ -6,28 +6,39 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using ByteCommander.Services;
+using ByteCommander.Viewer;
 
 namespace ByteCommander;
 
-/// <summary>Переглядач (F3: текст / hex / зображення) і простий редактор (F4).</summary>
+/// <summary>
+/// Переглядач (F3) і простий редактор (F4).
+/// Невеликі текстові файли — у звичайному TextBox (виділення, копіювання, редагування);
+/// великі файли й hex — у віртуальному <see cref="LargeFileView"/>, який читає з диска лише видиме.
+/// </summary>
 public sealed class ViewerWindow : Window
 {
     static readonly HashSet<string> ImageExt = new(StringComparer.OrdinalIgnoreCase)
         { ".png", ".jpg", ".jpeg", ".jfif", ".bmp", ".gif", ".ico", ".tif", ".tiff", ".webp" };
 
-    const int MaxTextBytes = 8 * 1024 * 1024;
-    const int MaxHexBytes = 1024 * 1024;
+    /// <summary>До цього розміру текст відкривається в TextBox (і в редакторі); більші — віртуально.</summary>
+    const int MaxTextBoxBytes = 8 * 1024 * 1024;
+
+    enum Mode { Text, Large, Image }
 
     string path;
     readonly bool edit;
     readonly TextBox text;
+    readonly LargeFileView large = new();
     readonly TextBlock info = new() { TextTrimming = TextTrimming.CharacterEllipsis };
     readonly Grid content = new();
     readonly TextBox findBox = new() { Width = 320 };
     readonly Border findBar;
     readonly Button encButton, wrapButton, hexButton, saveButton;
     Encoding enc = new UTF8Encoding(false);
-    bool encChosen, hex, hexDecided, dirty, loading, imageMode;
+    bool encChosen, hex, hexDecided, dirty, loading;
+    Mode mode;
+    CancellationTokenSource? findCts;
+    string baseInfo = "";
 
     public ViewerWindow(string path, bool edit)
     {
@@ -36,10 +47,7 @@ public sealed class ViewerWindow : Window
         Width = 1040;
         Height = 740;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = Util.Res("BgBrush");
-        Foreground = Util.Res("TextBrush");
-        FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
-        FontSize = 13;
+        Util.ApplyWindowTheme(this);
         UseLayoutRounding = true;
 
         text = new TextBox
@@ -65,6 +73,7 @@ public sealed class ViewerWindow : Window
                 UpdateTitle();
             }
         };
+        large.StatusChanged += UpdateLargeInfo;
 
         // Панель інструментів
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 8, 8, 6) };
@@ -88,13 +97,14 @@ public sealed class ViewerWindow : Window
         var findPanel = new StackPanel { Orientation = Orientation.Horizontal };
         findPanel.Children.Add(new TextBlock { Text = "Знайти:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
         findPanel.Children.Add(findBox);
-        findPanel.Children.Add(new TextBlock
+        var findHint = new TextBlock
         {
-            Text = "Enter / F3 — далі, Esc — закрити",
-            Foreground = Util.Res("TextDimBrush"),
+            Text = "Enter / F3 — далі, Esc — закрити (у hex: текст або байти, напр. «4D 5A»)",
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(12, 0, 0, 0),
-        });
+        };
+        findHint.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        findPanel.Children.Add(findHint);
         findBar = new Border { Padding = new Thickness(10, 6, 10, 0), Child = findPanel, Visibility = Visibility.Collapsed };
         findBox.KeyDown += (_, e) =>
         {
@@ -104,21 +114,25 @@ public sealed class ViewerWindow : Window
                 e.Handled = true;
             }
         };
+        findBox.TextChanged += (_, _) =>
+        {
+            findBox.ClearValue(BorderBrushProperty);
+            if (mode == Mode.Large) large.ClearMatch();
+        };
 
-        info.Foreground = Util.Res("TextDimBrush");
+        info.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
         var status = new Border { Padding = new Thickness(12, 5, 12, 7), Child = info };
 
-        content.Children.Add(text);
         var host = new Border
         {
             Margin = new Thickness(8, 0, 8, 0),
             CornerRadius = new CornerRadius(8),
-            BorderBrush = Util.Res("LineBrush"),
             BorderThickness = new Thickness(1),
-            Background = Util.Res("InputBrush"),
             ClipToBounds = true,
             Child = content,
         };
+        host.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
+        host.SetResourceReference(Border.BackgroundProperty, "InputBrush");
 
         var dock = new DockPanel();
         DockPanel.SetDock(bar, Dock.Top);
@@ -132,11 +146,12 @@ public sealed class ViewerWindow : Window
 
         PreviewKeyDown += OnKey;
         Closing += OnClosing;
-        Loaded += (_, _) =>
+        Closed += (_, _) =>
         {
-            Load();
-            if (!imageMode) text.Focus();
+            findCts?.Cancel();
+            large.SetSource(null);
         };
+        Loaded += (_, _) => Load();
         UpdateTitle();
     }
 
@@ -158,49 +173,72 @@ public sealed class ViewerWindow : Window
         try
         {
             if (!edit && ImageExt.Contains(Path.GetExtension(path)) && TryShowImage()) return;
-            ShowTextMode();
 
             var fi = new FileInfo(path);
-            if (edit && fi.Length > MaxTextBytes)
+            if (edit && fi.Length > MaxTextBoxBytes)
             {
-                Dialogs.Error(this, "Файл завеликий для вбудованого редактора (понад 8 МБ).");
+                Dialogs.Error(this, "Файл завеликий для вбудованого редактора (понад 8 МБ). Відкрийте його на перегляд (F3).");
                 Close();
                 return;
             }
 
-            var bytes = ReadHead((int)Math.Min(fi.Length, MaxTextBytes));
+            var head = ReadHead((int)Math.Min(fi.Length, 64 * 1024));
             if (!edit && !hexDecided)
             {
-                hex = LooksBinary(bytes);
+                hex = LooksBinary(head);
                 hexDecided = true;
             }
+            if (!encChosen) enc = Detect(head, truncated: fi.Length > head.Length);
 
-            loading = true;
-            if (hex)
-            {
-                text.Text = HexDump(bytes, Math.Min(bytes.Length, MaxHexBytes));
-            }
-            else
-            {
-                if (!encChosen) enc = Detect(bytes, truncated: fi.Length > bytes.Length);
-                text.Text = Decode(bytes);
-            }
-            loading = false;
-            text.CaretIndex = 0;
-            text.ScrollToHome();
-
-            long shown = hex ? Math.Min(bytes.Length, MaxHexBytes) : bytes.Length;
-            int lines = 1;
-            foreach (var c in text.Text) if (c == '\n') lines++;
-            info.Text = $"{Util.FormatSize(fi.Length)}  ·  {(hex ? "HEX" : EncodingName(enc))}  ·  {lines:N0} рядків" +
-                        (fi.Length > shown ? $"  ·  показано перші {Util.FormatSize(shown)}" : "");
+            if (!edit && (hex || fi.Length > MaxTextBoxBytes)) ShowLarge(fi);
+            else ShowSmallText(fi);
         }
         catch (Exception ex)
         {
             loading = false;
             info.Text = "Помилка: " + ex.Message;
         }
-        hexButton.Visibility = edit || imageMode ? Visibility.Collapsed : Visibility.Visible;
+        hexButton.Visibility = edit || mode == Mode.Image ? Visibility.Collapsed : Visibility.Visible;
+        encButton.Visibility = mode == Mode.Image || hex ? Visibility.Collapsed : Visibility.Visible;
+        wrapButton.Visibility = mode == Mode.Text ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void ShowSmallText(FileInfo fi)
+    {
+        SetContent(Mode.Text, text);
+        var bytes = ReadHead((int)fi.Length);
+        loading = true;
+        text.Text = Decode(bytes);
+        loading = false;
+        text.CaretIndex = 0;
+        text.ScrollToHome();
+        int lines = 1;
+        foreach (var c in text.Text) if (c == '\n') lines++;
+        info.Text = $"{Util.FormatSize(fi.Length)}  ·  {EncodingName(enc)}  ·  {lines:N0} рядків";
+        text.Focus();
+    }
+
+    void ShowLarge(FileInfo fi)
+    {
+        SetContent(Mode.Large, large);
+        baseInfo = $"{Util.FormatSize(fi.Length)}  ·  {(hex ? "HEX" : EncodingName(enc))}";
+        large.SetSource(hex ? new HexRowSource(path) : new TextRowSource(path, enc));
+        large.Focus();
+    }
+
+    void UpdateLargeInfo()
+    {
+        if (mode != Mode.Large || large.Source is not { } src) return;
+        info.Text = $"{baseInfo}  ·  {src.RowCount:N0} рядків" + (src.IsComplete ? "" : "  ·  індексація…");
+    }
+
+    void SetContent(Mode m, UIElement element)
+    {
+        if (mode == Mode.Large && m != Mode.Large) large.SetSource(null);
+        mode = m;
+        if (content.Children.Count == 1 && content.Children[0] == element) return;
+        content.Children.Clear();
+        content.Children.Add(element);
     }
 
     byte[] ReadHead(int count)
@@ -218,17 +256,6 @@ public sealed class ViewerWindow : Window
         return buf;
     }
 
-    void ShowTextMode()
-    {
-        imageMode = false;
-        if (!content.Children.Contains(text))
-        {
-            content.Children.Clear();
-            content.Children.Add(text);
-        }
-        encButton.Visibility = wrapButton.Visibility = Visibility.Visible;
-    }
-
     bool TryShowImage()
     {
         try
@@ -244,10 +271,7 @@ public sealed class ViewerWindow : Window
             bmp.Freeze();
             var img = new Image { Source = bmp, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, Margin = new Thickness(8) };
             RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-            content.Children.Clear();
-            content.Children.Add(img);
-            imageMode = true;
-            encButton.Visibility = wrapButton.Visibility = hexButton.Visibility = Visibility.Collapsed;
+            SetContent(Mode.Image, img);
             info.Text = $"{bmp.PixelWidth} × {bmp.PixelHeight} px  ·  {Util.FormatSize(new FileInfo(path).Length)}  ·  ← → — попереднє / наступне зображення";
             UpdateTitle();
             return true;
@@ -272,8 +296,8 @@ public sealed class ViewerWindow : Window
             return;
         }
         list.Sort(NativeMethods.StrCmpLogicalW);
-        int i = list.FindIndex(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
         if (list.Count == 0) return;
+        int i = list.FindIndex(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
         i = ((i < 0 ? 0 : i + dir) % list.Count + list.Count) % list.Count;
         path = list[i];
         if (!TryShowImage()) info.Text = "Не вдалося відкрити " + Path.GetFileName(path);
@@ -294,7 +318,7 @@ public sealed class ViewerWindow : Window
         if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return new UnicodeEncoding(true, true);
         try
         {
-            // Хвіст обрізаного файлу може розрізати UTF-8 символ — не враховуємо останні байти.
+            // Хвіст обрізаного фрагмента може розрізати UTF-8 символ — не враховуємо останні байти.
             int len = truncated ? Math.Max(0, b.Length - 4) : b.Length;
             new UTF8Encoding(false, true).GetString(b, 0, len);
             return new UTF8Encoding(false);
@@ -321,29 +345,6 @@ public sealed class ViewerWindow : Window
         _ => e.CodePage switch { 1251 => "Windows-1251", 866 => "DOS-866", 21866 => "KOI8-U", _ => e.WebName },
     };
 
-    static string HexDump(byte[] b, int len)
-    {
-        var sb = new StringBuilder(len * 4 + 64);
-        for (int off = 0; off < len; off += 16)
-        {
-            sb.Append(off.ToString("X8")).Append("  ");
-            for (int i = 0; i < 16; i++)
-            {
-                if (off + i < len) sb.Append(b[off + i].ToString("X2")).Append(' ');
-                else sb.Append("   ");
-                if (i == 7) sb.Append(' ');
-            }
-            sb.Append(' ');
-            for (int i = 0; i < 16 && off + i < len; i++)
-            {
-                var c = b[off + i];
-                sb.Append(c >= 32 && c < 127 ? (char)c : '·');
-            }
-            sb.Append('\n');
-        }
-        return sb.ToString();
-    }
-
     // ------------------------------------------------------------------ дії
 
     void ShowEncodingMenu()
@@ -355,8 +356,6 @@ public sealed class ViewerWindow : Window
             {
                 enc = make();
                 encChosen = true;
-                hex = false;
-                hexDecided = true;
                 if (!dirty) Load();
             }));
         }
@@ -375,7 +374,7 @@ public sealed class ViewerWindow : Window
 
     void ToggleHex()
     {
-        if (edit || imageMode) return;
+        if (edit || mode == Mode.Image) return;
         hex = !hex;
         hexDecided = true;
         Load();
@@ -384,7 +383,7 @@ public sealed class ViewerWindow : Window
     void ShowFind()
     {
         findBar.Visibility = Visibility.Visible;
-        if (text.SelectionLength > 0 && text.SelectionLength < 200) findBox.Text = text.SelectedText;
+        if (mode == Mode.Text && text.SelectionLength > 0 && text.SelectionLength < 200) findBox.Text = text.SelectedText;
         findBox.Focus();
         findBox.SelectAll();
     }
@@ -392,14 +391,20 @@ public sealed class ViewerWindow : Window
     void FindNext()
     {
         var q = findBox.Text;
-        if (q.Length == 0 || imageMode) return;
+        if (q.Length == 0) return;
+        if (mode == Mode.Large) _ = FindNextLarge(q);
+        else if (mode == Mode.Text) FindNextText(q);
+    }
+
+    void FindNextText(string q)
+    {
         var t = text.Text;
         int start = Math.Min(text.SelectionStart + (text.SelectionLength > 0 ? 1 : 0), t.Length);
         int idx = t.IndexOf(q, start, StringComparison.OrdinalIgnoreCase);
         if (idx < 0) idx = t.IndexOf(q, 0, StringComparison.OrdinalIgnoreCase);
         if (idx < 0)
         {
-            findBox.BorderBrush = Util.Res("DangerBrush");
+            findBox.SetResourceReference(BorderBrushProperty, "DangerBrush");
             return;
         }
         findBox.ClearValue(BorderBrushProperty);
@@ -408,6 +413,46 @@ public sealed class ViewerWindow : Window
         var r = text.GetRectFromCharacterIndex(idx);
         if (!r.IsEmpty && (r.Left < 0 || r.Left > text.ViewportWidth - 40))
             text.ScrollToHorizontalOffset(Math.Max(0, text.HorizontalOffset + r.Left - 80));
+    }
+
+    async Task FindNextLarge(string q)
+    {
+        if (large.Source is not { } src) return;
+        findCts?.Cancel();
+        var cts = findCts = new CancellationTokenSource();
+        var (row, col) = large.Match is { } m ? (m.Row, m.Column + 1) : (large.TopRow, 0);
+        void Progress(double p) => Dispatcher.InvokeAsync(() => { if (findCts == cts) info.Text = $"Пошук «{q}»…  {p:P0}  ·  Esc — зупинити"; });
+        try
+        {
+            var found = await Task.Run(() => src.Find(q, row, col, cts.Token, Progress));
+            bool wrapped = false;
+            if (found == null && (row > 0 || col > 0))
+            {
+                found = await Task.Run(() => src.Find(q, 0, 0, cts.Token, Progress));
+                wrapped = true;
+            }
+            if (cts.IsCancellationRequested || large.Source != src) return;
+            UpdateLargeInfo();
+            if (found is { } f)
+            {
+                findBox.ClearValue(BorderBrushProperty);
+                large.ShowMatch(f);
+                if (wrapped) info.Text += "  ·  пошук продовжено з початку";
+            }
+            else
+            {
+                findBox.SetResourceReference(BorderBrushProperty, "DangerBrush");
+                info.Text += $"  ·  «{q}» не знайдено";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            UpdateLargeInfo();
+        }
+        finally
+        {
+            if (findCts == cts) findCts = null;
+        }
     }
 
     bool Save()
@@ -449,10 +494,11 @@ public sealed class ViewerWindow : Window
         switch (e.Key)
         {
             case Key.Escape:
-                if (findBar.Visibility == Visibility.Visible)
+                if (findCts != null) findCts.Cancel();
+                else if (findBar.Visibility == Visibility.Visible)
                 {
                     findBar.Visibility = Visibility.Collapsed;
-                    text.Focus();
+                    if (mode == Mode.Large) large.Focus(); else text.Focus();
                 }
                 else Close();
                 e.Handled = true;
@@ -475,11 +521,11 @@ public sealed class ViewerWindow : Window
                 Save();
                 e.Handled = true;
                 break;
-            case Key.Right or Key.PageDown or Key.Space when imageMode:
+            case Key.Right or Key.PageDown or Key.Space when mode == Mode.Image:
                 NextImage(1);
                 e.Handled = true;
                 break;
-            case Key.Left or Key.PageUp or Key.Back when imageMode:
+            case Key.Left or Key.PageUp or Key.Back when mode == Mode.Image:
                 NextImage(-1);
                 e.Handled = true;
                 break;

@@ -1,7 +1,7 @@
 <UserControl x:Class="ByteCommander.Controls.FilePanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Border x:Name="Root" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+    <Border x:Name="Root" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource LineBrush}"
             BorderThickness="1" CornerRadius="8">
         <Grid>
             <Grid.RowDefinitions>
@@ -29,21 +29,21 @@
                                         MouseLeftButtonDown="Tab_MouseLeftButtonDown" MouseUp="Tab_MouseUp" ToolTip="{Binding Location}">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock x:Name="TabIcon" Text="&#xE8B7;" FontFamily="{StaticResource IconFont}" FontSize="12"
-                                                   VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource TextDimBrush}"/>
+                                                   VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextDimBrush}"/>
                                         <TextBlock x:Name="TabText" Text="{Binding Title}" VerticalAlignment="Center" MaxWidth="170"
-                                                   TextTrimming="CharacterEllipsis" Foreground="{StaticResource TextDimBrush}"/>
+                                                   TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextDimBrush}"/>
                                         <Button Style="{StaticResource TabCloseButton}" Content="&#xE711;" Click="TabClose_Click"
                                                 Margin="6,0,0,0" ToolTip="Закрити (Ctrl+W)"/>
                                     </StackPanel>
                                 </Border>
                                 <DataTemplate.Triggers>
                                     <Trigger SourceName="TabBd" Property="IsMouseOver" Value="True">
-                                        <Setter TargetName="TabBd" Property="Background" Value="{StaticResource HoverBrush}"/>
+                                        <Setter TargetName="TabBd" Property="Background" Value="{DynamicResource HoverBrush}"/>
                                     </Trigger>
                                     <DataTrigger Binding="{Binding IsActive}" Value="True">
-                                        <Setter TargetName="TabBd" Property="Background" Value="{StaticResource TabActiveBrush}"/>
-                                        <Setter TargetName="TabText" Property="Foreground" Value="{StaticResource TextBrush}"/>
-                                        <Setter TargetName="TabIcon" Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                        <Setter TargetName="TabBd" Property="Background" Value="{DynamicResource TabActiveBrush}"/>
+                                        <Setter TargetName="TabText" Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                                        <Setter TargetName="TabIcon" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
                                     </DataTrigger>
                                 </DataTemplate.Triggers>
                             </DataTemplate>
@@ -65,11 +65,11 @@
                         <Image x:Name="DriveIcon" Width="16" Height="16" Margin="0,0,6,0"/>
                         <TextBlock x:Name="DriveText" VerticalAlignment="Center" FontWeight="SemiBold"/>
                         <TextBlock Text="&#xE70D;" FontFamily="{StaticResource IconFont}" FontSize="9" Margin="7,1,0,0"
-                                   VerticalAlignment="Center" Foreground="{StaticResource TextDimBrush}"/>
+                                   VerticalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
                     </StackPanel>
                 </Button>
-                <Border Grid.Column="1" x:Name="PathBorder" Margin="6,0" CornerRadius="6" Background="{StaticResource InputBrush}"
-                        BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Cursor="IBeam"
+                <Border Grid.Column="1" x:Name="PathBorder" Margin="6,0" CornerRadius="6" Background="{DynamicResource InputBrush}"
+                        BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" Cursor="IBeam"
                         MouseLeftButtonDown="PathBorder_MouseLeftButtonDown" ToolTip="Клацніть, щоб ввести шлях (Ctrl+L)">
                     <Grid>
                         <ScrollViewer x:Name="CrumbScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
@@ -82,13 +82,13 @@
                     </Grid>
                 </Border>
                 <TextBlock Grid.Column="2" x:Name="FreeText" VerticalAlignment="Center" FontSize="12" Margin="2,0,4,0"
-                           Foreground="{StaticResource TextDimBrush}"/>
+                           Foreground="{DynamicResource TextDimBrush}"/>
             </Grid>
 
             <!-- Фільтр (Ctrl+F) -->
             <Border Grid.Row="2" x:Name="FilterBar" Visibility="Collapsed" Margin="6,0,6,6">
                 <DockPanel>
-                    <TextBlock Text="&#xE71C;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource AccentBrush}"
+                    <TextBlock Text="&#xE71C;" FontFamily="{StaticResource IconFont}" Foreground="{DynamicResource AccentBrush}"
                                VerticalAlignment="Center" Margin="4,0,8,0"/>
                     <TextBox x:Name="FilterBox" TextChanged="FilterBox_TextChanged" PreviewKeyDown="FilterBox_PreviewKeyDown"
                              ToolTip="Фільтр за частиною імені · Esc — закрити"/>
@@ -156,14 +156,14 @@
 
             <!-- Швидкий пошук (просто почніть друкувати) -->
             <Border Grid.Row="3" x:Name="QuickSearchBorder" Visibility="Collapsed" HorizontalAlignment="Left" VerticalAlignment="Bottom"
-                    Margin="12" Padding="10,5" CornerRadius="6" Background="{StaticResource AccentBrush}" IsHitTestVisible="False">
+                    Margin="12" Padding="10,5" CornerRadius="6" Background="{DynamicResource AccentBrush}" IsHitTestVisible="False">
                 <TextBlock x:Name="QuickSearchText" Foreground="White"/>
             </Border>
 
             <!-- Статус -->
             <DockPanel Grid.Row="4" Margin="10,5,10,7">
-                <TextBlock x:Name="StatusRight" DockPanel.Dock="Right" FontSize="12" Foreground="{StaticResource TextDimBrush}"/>
-                <TextBlock x:Name="StatusLeft" FontSize="12" Foreground="{StaticResource TextDimBrush}" TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="StatusRight" DockPanel.Dock="Right" FontSize="12" Foreground="{DynamicResource TextDimBrush}"/>
+                <TextBlock x:Name="StatusLeft" FontSize="12" Foreground="{DynamicResource TextDimBrush}" TextTrimming="CharacterEllipsis"/>
             </DockPanel>
         </Grid>
     </Border>

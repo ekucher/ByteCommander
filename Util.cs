@@ -117,7 +117,12 @@ public static class Util
         }
     }
 
-    public static Brush Res(string key) => (Brush)Application.Current.FindResource(key);
+    /// <summary>Тло й текст вікна через посилання на ресурси — вікно перефарбовується при зміні теми.</summary>
+    public static void ApplyWindowTheme(Window w)
+    {
+        w.SetResourceReference(Control.BackgroundProperty, "BgBrush");
+        w.SetResourceReference(Control.ForegroundProperty, "TextBrush");
+    }
 
     public static FontFamily IconFont => (FontFamily)Application.Current.FindResource("IconFont");
 

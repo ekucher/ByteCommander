@@ -10,9 +10,9 @@ public partial class App : Application
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-        // Темний заголовок вікна (Windows 10/11) для всіх вікон застосунку.
+        // Заголовок вікна під тему (темний/світлий, колір тла) для всіх вікон застосунку.
         EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
-            new RoutedEventHandler((s, _) => NativeMethods.ApplyDarkChrome((Window)s)));
+            new RoutedEventHandler((s, _) => NativeMethods.ApplyChrome((Window)s)));
 
         DispatcherUnhandledException += (_, ex) =>
         {
@@ -21,5 +21,19 @@ public partial class App : Application
         };
 
         base.OnStartup(e);
+
+        var settings = AppSettings.Load();
+        ThemeManager.Apply(settings.Theme);
+
+        // ByteCommander.exe --view <файл> — лише переглядач (зручно для «Відкрити за допомогою»).
+        if (e.Args.Length >= 2 && e.Args[0] is "--view" or "/view" && File.Exists(e.Args[1]))
+        {
+            ShutdownMode = ShutdownMode.OnLastWindowClose;
+            new ViewerWindow(Path.GetFullPath(e.Args[1]), false) { WindowStartupLocation = WindowStartupLocation.CenterScreen }.Show();
+            return;
+        }
+
+        MainWindow = new MainWindow(settings);
+        MainWindow.Show();
     }
 }

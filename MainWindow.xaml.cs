@@ -30,10 +30,10 @@ public partial class MainWindow : Window
     FilePanel Other => active == LeftPanel ? RightPanel : LeftPanel;
     IntPtr Hwnd => new WindowInteropHelper(this).Handle;
 
-    public MainWindow()
+    public MainWindow(AppSettings settings)
     {
         InitializeComponent();
-        settings = AppSettings.Load();
+        this.settings = settings;
         FilePanel.ShowHidden = settings.ShowHidden;
         active = LeftPanel;
         historyIndex = settings.CommandHistory.Count;
@@ -105,6 +105,7 @@ public partial class MainWindow : Window
         settings.Right = RightPanel.GetState();
         settings.RightPanelActive = active == RightPanel;
         settings.ShowHidden = FilePanel.ShowHidden;
+        settings.Theme = ThemeManager.Current;
         settings.Maximized = WindowState == WindowState.Maximized;
         var r = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         settings.Window = new WindowBounds { X = r.X, Y = r.Y, Width = r.Width, Height = r.Height };
@@ -199,6 +200,8 @@ public partial class MainWindow : Window
         cmdToggleBookmark = Add("Додати / прибрати закладку", "\uE735", ToggleBookmark, K(Key.D, CtrlShift));
 
         cmdRefresh = Add("Оновити панель", "\uE72C", () => active.Refresh(), K(Key.R, Ctrl));
+        foreach (var t in new[] { AppTheme.System, AppTheme.Dark, AppTheme.Light })
+            Add("Тема: " + ThemeManager.DisplayName(t), "\uE706", () => SetTheme(t));
         Add("Показати / сховати приховані файли", "\uE7B3", ToggleHidden, K(Key.H, Ctrl));
         Add("Фільтр у панелі", "\uE71C", () => active.ShowFilter(), K(Key.F, Ctrl));
         Add("Поміняти панелі місцями", "\uE8AB", SwapPanels, K(Key.U, Ctrl));
@@ -239,8 +242,12 @@ public partial class MainWindow : Window
         foreach (var (cmd, label) in bar)
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
-            sp.Children.Add(new TextBlock { Text = cmd.Keys[0].ToString(), Foreground = Util.Res("AccentBrush"), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 0) });
-            sp.Children.Add(new TextBlock { Text = label, Foreground = Util.Res("TextDimBrush") });
+            var keyText = new TextBlock { Text = cmd.Keys[0].ToString(), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 0) };
+            keyText.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+            sp.Children.Add(keyText);
+            var labelText = new TextBlock { Text = label };
+            labelText.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+            sp.Children.Add(labelText);
             var b = new Button { Content = sp, Style = (Style)FindResource("FKeyButton"), ToolTip = cmd.Title };
             b.Click += (_, _) => cmd.Run();
             FKeyBar.Children.Add(b);
@@ -751,7 +758,35 @@ public partial class MainWindow : Window
     void UpdateHiddenButton()
     {
         HiddenButton.Content = FilePanel.ShowHidden ? "\uE7B3" : "\uED1A";
-        HiddenButton.Foreground = Util.Res(FilePanel.ShowHidden ? "AccentBrush" : "TextDimBrush");
+        HiddenButton.SetResourceReference(ForegroundProperty, FilePanel.ShowHidden ? "AccentBrush" : "TextDimBrush");
+    }
+
+    void SetTheme(AppTheme theme)
+    {
+        ThemeManager.Apply(theme);
+        settings.Theme = theme;
+        settings.Save();
+        ShowToast("Тема: " + ThemeManager.DisplayName(theme));
+    }
+
+    /// <summary>Кнопка теми: як у системі → темна → світла → …</summary>
+    void CycleTheme() => SetTheme(ThemeManager.Current switch
+    {
+        AppTheme.System => AppTheme.Dark,
+        AppTheme.Dark => AppTheme.Light,
+        _ => AppTheme.System,
+    });
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        // WM_SETTINGCHANGE з "ImmersiveColorSet" — користувач змінив тему Windows.
+        HwndSource.FromHwnd(Hwnd)?.AddHook((IntPtr h, int msg, IntPtr wp, IntPtr lp, ref bool handled) =>
+        {
+            if (msg == 0x001A && lp != IntPtr.Zero && System.Runtime.InteropServices.Marshal.PtrToStringUni(lp) == "ImmersiveColorSet")
+                ThemeManager.OnSystemThemeChanged();
+            return IntPtr.Zero;
+        });
     }
 
     void SwapPanels()
@@ -881,4 +916,5 @@ public partial class MainWindow : Window
     void Hidden_Click(object s, RoutedEventArgs e) => ToggleHidden();
     void Terminal_Click(object s, RoutedEventArgs e) => OpenTerminal();
     void Palette_Click(object s, RoutedEventArgs e) => ShowPalette();
+    void Theme_Click(object s, RoutedEventArgs e) => CycleTheme();
 }

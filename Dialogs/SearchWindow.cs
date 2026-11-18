@@ -45,13 +45,12 @@ public sealed class SearchWindow : Window
         Width = 960;
         Height = 640;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = Util.Res("BgBrush");
-        Foreground = Util.Res("TextBrush");
+        Util.ApplyWindowTheme(this);
         FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
         FontSize = 13;
         UseLayoutRounding = true;
         where.Text = startDir;
-        status.Foreground = Util.Res("TextDimBrush");
+        status.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
 
         var form = new Grid();
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -70,7 +69,7 @@ public sealed class SearchWindow : Window
         }
         Row(0, "Де шукати:", where);
         Row(1, "Ім’я / маска:", mask, "Наприклад: *.cs; *.xaml  або просто частина імені");
-        Row(2, "Містить текст:", needle, "Необов’язково. Пошук без урахування регістру (UTF-8 / UTF-16)");
+        Row(2, "Містить текст:", needle, "Необов’язково. Без урахування регістру; UTF-8, UTF-16, а також Windows-1251 / CP866");
 
         go = new Button { Content = "Знайти", MinWidth = 120, IsDefault = true, Style = (Style)Application.Current.FindResource("AccentButton") };
         go.Click += (_, _) => StartOrStop();
@@ -92,12 +91,12 @@ public sealed class SearchWindow : Window
         {
             Child = results,
             CornerRadius = new CornerRadius(8),
-            BorderBrush = Util.Res("LineBrush"),
             BorderThickness = new Thickness(1),
-            Background = Util.Res("PanelBrush"),
             Margin = new Thickness(0, 12, 0, 0),
             Padding = new Thickness(2),
         };
+        resultsHost.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
+        resultsHost.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
         results.Margin = new Thickness(0);
 
         var root = new DockPanel { Margin = new Thickness(16) };
