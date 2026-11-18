@@ -1,0 +1,88 @@
+<Window x:Class="ByteCommander.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:ByteCommander.Controls"
+        Title="Byte Commander" Width="1420" Height="860" MinWidth="760" MinHeight="420"
+        Background="{StaticResource BgBrush}" Foreground="{StaticResource TextBrush}"
+        FontFamily="{StaticResource UiFont}" FontSize="13" UseLayoutRounding="True"
+        PreviewKeyDown="Window_PreviewKeyDown" Loaded="Window_Loaded" Closing="Window_Closing">
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo/>
+    </Window.TaskbarItemInfo>
+    <Grid Margin="8,6,8,6">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Панель інструментів -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,6" LastChildFill="False">
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                <Button Style="{StaticResource IconButton}" Content="&#xE72B;" ToolTip="Назад (Alt+←)" Click="Back_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE72A;" ToolTip="Вперед (Alt+→)" Click="Forward_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE74A;" ToolTip="Вгору (Backspace)" Click="Up_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Оновити (Ctrl+R)" Click="Refresh_Click"/>
+                <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,7"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE8F4;" ToolTip="Новий каталог (F7)" Click="MkDir_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE8C8;" ToolTip="Копіювати (F5)" Click="Copy_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE8DE;" ToolTip="Перемістити (F6)" Click="Move_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE8AC;" ToolTip="Перейменувати (F2)" Click="Rename_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="Видалити в кошик (F8 / Del)" Click="Delete_Click"/>
+                <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,7"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE721;" ToolTip="Пошук файлів (Alt+F7)" Click="Search_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE734;" ToolTip="Закладки (Ctrl+D)" Click="Bookmarks_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE7B8;" ToolTip="Запакувати в ZIP (Alt+F5)" Click="Pack_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE8AB;" ToolTip="Поміняти панелі (Ctrl+U)" Click="Swap_Click"/>
+                <Button Style="{StaticResource IconButton}" x:Name="HiddenButton" Content="&#xE7B3;" ToolTip="Приховані файли (Ctrl+H)" Click="Hidden_Click"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE756;" ToolTip="Термінал у поточному каталозі (Ctrl+`)" Click="Terminal_Click"/>
+            </StackPanel>
+            <Button DockPanel.Dock="Right" Click="Palette_Click" Focusable="False" Padding="12,6" ToolTip="Палітра команд (Ctrl+Shift+P або F1)">
+                <DockPanel Width="300" LastChildFill="False">
+                    <TextBlock Text="&#xE721;" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center" Foreground="{StaticResource TextDimBrush}"/>
+                    <TextBlock Text="Команди, закладки, диски…" Margin="9,0,0,0" Foreground="{StaticResource TextDimBrush}"/>
+                    <Border DockPanel.Dock="Right" Background="{StaticResource InputBrush}" CornerRadius="4" Padding="6,1">
+                        <TextBlock Text="Ctrl+Shift+P" FontSize="11" Foreground="{StaticResource TextDimBrush}"/>
+                    </Border>
+                </DockPanel>
+            </Button>
+        </DockPanel>
+
+        <!-- Дві панелі -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="250"/>
+                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="*" MinWidth="250"/>
+            </Grid.ColumnDefinitions>
+            <c:FilePanel x:Name="LeftPanel" Grid.Column="0"/>
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent"
+                          ResizeBehavior="PreviousAndNext" Focusable="False"/>
+            <c:FilePanel x:Name="RightPanel" Grid.Column="2"/>
+
+            <Border x:Name="Toast" Grid.ColumnSpan="3" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                    Margin="0,0,0,40" Padding="16,9" CornerRadius="8" Background="{StaticResource PanelAltBrush}"
+                    BorderBrush="{StaticResource AccentBrush}" BorderThickness="1" Visibility="Collapsed" IsHitTestVisible="False">
+                <TextBlock x:Name="ToastText"/>
+            </Border>
+        </Grid>
+
+        <!-- Командний рядок -->
+        <Border Grid.Row="2" Margin="0,6,0,0" Background="{StaticResource PanelBrush}" CornerRadius="8"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+            <DockPanel Margin="10,1">
+                <TextBlock Text="&#xE756;" DockPanel.Dock="Left" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextDimBrush}" Margin="0,0,8,0"/>
+                <TextBlock x:Name="PromptText" DockPanel.Dock="Left" VerticalAlignment="Center" MaxWidth="520"
+                           TextTrimming="CharacterEllipsis" Foreground="{StaticResource AccentBrush}" FontFamily="{StaticResource MonoFont}"/>
+                <TextBox x:Name="CommandLine" BorderThickness="0" Background="Transparent" FontFamily="{StaticResource MonoFont}"
+                         PreviewKeyDown="CommandLine_PreviewKeyDown"
+                         ToolTip="Команда для cmd у поточному каталозі · cd шлях · Ctrl+Enter — вставити ім’я файлу · ↑↓ — історія"/>
+            </DockPanel>
+        </Border>
+
+        <!-- Функціональні клавіші -->
+        <UniformGrid Grid.Row="3" x:Name="FKeyBar" Rows="1" Margin="0,6,0,0"/>
+    </Grid>
+</Window>
