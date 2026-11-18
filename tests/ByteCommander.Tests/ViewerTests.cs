@@ -7,14 +7,7 @@ namespace ByteCommander.Tests;
 [Collection(WorkspaceCollection.Name)]
 public sealed class TextRowSourceTests(TestWorkspace ws)
 {
-    string WriteFile(string name, byte[] bytes)
-    {
-        var dir = Path.Combine(ws.Root, nameof(TextRowSourceTests));
-        Directory.CreateDirectory(dir);
-        var p = Path.Combine(dir, name);
-        File.WriteAllBytes(p, bytes);
-        return p;
-    }
+    string WriteFile(string name, byte[] bytes) => ws.WriteFile(nameof(TextRowSourceTests), name, bytes);
 
     static TextRowSource Open(string path, Encoding enc)
     {
@@ -146,14 +139,7 @@ public sealed class TextRowSourceTests(TestWorkspace ws)
 [Collection(WorkspaceCollection.Name)]
 public sealed class HexRowSourceTests(TestWorkspace ws)
 {
-    string WriteFile(string name, byte[] bytes)
-    {
-        var dir = Path.Combine(ws.Root, nameof(HexRowSourceTests));
-        Directory.CreateDirectory(dir);
-        var p = Path.Combine(dir, name);
-        File.WriteAllBytes(p, bytes);
-        return p;
-    }
+    string WriteFile(string name, byte[] bytes) => ws.WriteFile(nameof(HexRowSourceTests), name, bytes);
 
     [Fact]
     public void FormatsRows_AndCountsPartialLastRow()

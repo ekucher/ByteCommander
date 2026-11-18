@@ -28,6 +28,12 @@ public static class Dialogs
             w.Owner = owner;
             w.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         }
+        else
+        {
+            // Немає вікна-власника (напр. помилка в режимі --view) — діалог має бути видно на панелі задач.
+            w.ShowInTaskbar = true;
+            w.Topmost = true;
+        }
         return w;
     }
 

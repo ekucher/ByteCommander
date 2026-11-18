@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Text;
+using static ByteCommander.Util;
 using System.IO.Compression;
 
 namespace ByteCommander.Services;
@@ -530,40 +531,6 @@ public sealed class FileOperation
     {
         st.DoneBytes += len;
         st.DoneFiles++;
-    }
-
-    static void ClearReadOnly(string path)
-    {
-        try
-        {
-            var a = File.GetAttributes(path);
-            if (a.HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(path, a & ~FileAttributes.ReadOnly);
-        }
-        catch { }
-    }
-
-    static void TryDelete(string path)
-    {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
-    }
-
-    /// <summary>
-    /// Пише новий вміст у тимчасовий файл поруч із <paramref name="dst"/> і лише після успіху
-    /// атомарно замінює ним призначення. При збої чи скасуванні наявний файл лишається недоторканим.
-    /// </summary>
-    static void WriteViaTemp(string dst, Action<string> write)
-    {
-        var tmp = Path.Combine(Path.GetDirectoryName(dst)!, $".{Path.GetFileName(dst)}.{Guid.NewGuid():N}.bctmp");
-        try
-        {
-            write(tmp);
-            if (File.Exists(dst)) ClearReadOnly(dst);
-            File.Move(tmp, dst, overwrite: true);
-        }
-        finally
-        {
-            TryDelete(tmp);
-        }
     }
 
     /// <summary>Кодування імен для ZIP без прапорця UTF-8 (Провідник пише їх у OEM-кодуванні, для uk-UA — CP866).</summary>

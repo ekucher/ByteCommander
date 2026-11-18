@@ -95,6 +95,56 @@ public static class Util
 
     public static long DirectorySize(string path, CancellationToken ct = default) => ScanFiles(path, ct).Sum(f => f.Length);
 
+    /// <summary>Відкрити файл на читання, не заважаючи іншим програмам його писати, перейменовувати чи видаляти.</summary>
+    public static FileStream OpenShared(string path, FileOptions options = FileOptions.None) =>
+        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, options);
+
+    /// <summary>
+    /// Пише новий вміст у тимчасовий файл поруч із <paramref name="dst"/> і лише після успіху атомарно
+    /// замінює ним призначення. При збої чи скасуванні наявний файл лишається недоторканим.
+    /// </summary>
+    /// <param name="keepDestinationMetadata">
+    /// Зберегти атрибути, дату створення й права наявного файлу (File.Replace) — для редагування на місці.
+    /// Інакше призначення просто замінюється (атрибути виставляє той, хто викликає).
+    /// </param>
+    public static void WriteViaTemp(string dst, Action<string> write, bool keepDestinationMetadata = false)
+    {
+        var tmp = Path.Combine(Path.GetDirectoryName(dst)!, $".{Path.GetFileName(dst)}.{Guid.NewGuid():N}.bctmp");
+        try
+        {
+            write(tmp);
+            if (File.Exists(dst) && keepDestinationMetadata)
+            {
+                File.Replace(tmp, dst, null, ignoreMetadataErrors: true);
+                return;
+            }
+            if (File.Exists(dst)) ClearReadOnly(dst);
+            File.Move(tmp, dst, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(tmp);
+        }
+    }
+
+    public static void ClearReadOnly(string path)
+    {
+        try
+        {
+            var a = File.GetAttributes(path);
+            if (a.HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(path, a & ~FileAttributes.ReadOnly);
+        }
+        catch
+        {
+            // якщо не вдалося — наступна операція повідомить про справжню причину
+        }
+    }
+
+    public static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
     /// <summary>"C:\a" → "C:\a\": шлях, який операції сприймають як каталог призначення.</summary>
     public static string AsDirTarget(string path) => path.TrimEnd('\\', '/') + "\\";
 
@@ -120,8 +170,8 @@ public static class Util
     /// <summary>Тло й текст вікна через посилання на ресурси — вікно перефарбовується при зміні теми.</summary>
     public static void ApplyWindowTheme(Window w)
     {
-        w.SetResourceReference(Control.BackgroundProperty, "BgBrush");
-        w.SetResourceReference(Control.ForegroundProperty, "TextBrush");
+        w.SetResourceReference(Control.BackgroundProperty, ThemeKeys.BgBrush);
+        w.SetResourceReference(Control.ForegroundProperty, ThemeKeys.TextBrush);
     }
 
     public static FontFamily IconFont => (FontFamily)Application.Current.FindResource("IconFont");

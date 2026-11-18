@@ -25,10 +25,10 @@ public sealed class PaletteWindow : Window
         ShowInTaskbar = false;
         Width = 660;
         SizeToContent = SizeToContent.Height;
-        SetResourceReference(BackgroundProperty, "PanelAltBrush");
-        SetResourceReference(BorderBrushProperty, "AccentBrush");
+        SetResourceReference(BackgroundProperty, ThemeKeys.PanelAltBrush);
+        SetResourceReference(BorderBrushProperty, ThemeKeys.AccentBrush);
         BorderThickness = new Thickness(1);
-        SetResourceReference(ForegroundProperty, "TextBrush");
+        SetResourceReference(ForegroundProperty, ThemeKeys.TextBrush);
         FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
         FontSize = 13;
         UseLayoutRounding = true;
@@ -140,9 +140,9 @@ public sealed class PaletteWindow : Window
         var row = new DockPanel();
         var glyph = Util.Glyph(e.Glyph, 14);
         glyph.Width = 28;
-        glyph.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+        glyph.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.AccentBrush);
         var hint = new TextBlock { Text = e.Hint, Margin = new Thickness(16, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        hint.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        hint.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
         DockPanel.SetDock(glyph, Dock.Left);
         DockPanel.SetDock(hint, Dock.Right);
         row.Children.Add(glyph);

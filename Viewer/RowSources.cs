@@ -1,11 +1,16 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using ByteCommander.Services;
 
 namespace ByteCommander.Viewer;
 
-/// <summary>Збіг пошуку: рядок, позиція в ньому (для hex — байт у рядку) і довжина.</summary>
-public readonly record struct TextMatch(long Row, int Column, int Length);
+/// <summary>
+/// Збіг пошуку: рядок, позиція в ньому (для hex — байт у рядку) і довжина.
+/// <paramref name="SpillOver"/> — скільки символів збігу продовжується на наступному рядку
+/// (коли збіг перетинає «м’який» розрив довгого рядка).
+/// </summary>
+public readonly record struct TextMatch(long Row, int Column, int Length, int SpillOver = 0);
 
 /// <summary>Джерело рядків для віртуального переглядача: читає з диска лише те, що видно.</summary>
 public interface IRowSource : IDisposable
@@ -26,6 +31,26 @@ public interface IRowSource : IDisposable
     IEnumerable<(int Column, int Length)> GetHighlights(long row, TextMatch match);
 }
 
+/// <summary>Як у кодуванні виглядає одиниця коду: 1 байт (однобайтові, UTF-8) чи 2 (UTF-16 LE/BE).</summary>
+internal readonly record struct CodeUnitLayout(int BytesPerCodeUnit, bool BigEndian, bool Utf8)
+{
+    public static CodeUnitLayout From(Encoding e) =>
+        new(TextEncodings.IsUtf16(e) ? 2 : 1, TextEncodings.IsUtf16BigEndian(e), e is UTF8Encoding);
+}
+
+/// <summary>Звіт про прогрес не частіше, ніж раз на заданий інтервал (і перевірка скасування разом із ним).</summary>
+internal sealed class Throttle(TimeSpan interval)
+{
+    readonly Stopwatch sw = Stopwatch.StartNew();
+
+    public bool Due()
+    {
+        if (sw.Elapsed < interval) return false;
+        sw.Restart();
+        return true;
+    }
+}
+
 /// <summary>
 /// Розбиває байтовий потік на рядки: кінець рядка — LF (CR перед ним відкидається), або «м’який» розрив,
 /// якщо рядок довший за <see cref="TextRowSource.MaxLineBytes"/> — щоб багатомегабайтний рядок
@@ -36,9 +61,7 @@ internal sealed class LineScanner
 {
     readonly Stream stream;
     readonly long end;
-    readonly int unit;          // 1 — однобайтові кодування / UTF-8, 2 — UTF-16
-    readonly bool bigEndian;
-    readonly bool utf8;
+    readonly CodeUnitLayout layout;
     readonly int maxLine;
     readonly byte[] buf;
     long bufStart;              // зміщення buf[0] у файлі
@@ -46,14 +69,12 @@ internal sealed class LineScanner
     long pos;                   // початок наступного рядка
     int lastOffset, lastLength;
 
-    public LineScanner(Stream stream, long start, long end, int unit, bool bigEndian, bool utf8, int maxLineBytes)
+    public LineScanner(Stream stream, long start, long end, CodeUnitLayout layout, int maxLineBytes)
     {
         this.stream = stream;
         this.end = end;
-        this.unit = unit;
-        this.bigEndian = bigEndian;
-        this.utf8 = utf8;
-        maxLine = maxLineBytes - maxLineBytes % unit;
+        this.layout = layout;
+        maxLine = maxLineBytes - maxLineBytes % layout.BytesPerCodeUnit;
         buf = new byte[Math.Max(1 << 20, maxLine * 2 + 16)];
         pos = start;
         bufStart = start;
@@ -64,16 +85,22 @@ internal sealed class LineScanner
     /// <summary>Байти вмісту останнього прочитаного рядка (без переводу рядка). Дійсні до наступного виклику.</summary>
     public ReadOnlySpan<byte> LastContent => buf.AsSpan(lastOffset, lastLength);
 
+    /// <summary>Останній рядок закінчився не переводом рядка, а м’яким розривом — текст продовжується в наступному.</summary>
+    public bool LastWasSoftBreak { get; private set; }
+
+    int Unit => layout.BytesPerCodeUnit;
+
     public bool Next(out long lineStart, out int contentLength)
     {
         lineStart = pos;
         contentLength = 0;
+        LastWasSoftBreak = false;
         if (pos >= end) return false;
 
         EnsureWindow();
         int rel = (int)(pos - bufStart);
         int avail = (int)Math.Min(bufLen - rel, end - pos);
-        int window = Math.Min(avail, maxLine + unit);
+        int window = Math.Min(avail, maxLine + Unit);
         var span = buf.AsSpan(rel, window);
 
         int nl = FindNewline(span);
@@ -81,8 +108,8 @@ internal sealed class LineScanner
         if (nl >= 0)
         {
             contentLength = nl;
-            if (contentLength >= unit && IsCarriageReturn(span, contentLength - unit)) contentLength -= unit;
-            next = nl + unit;
+            if (contentLength >= Unit && IsCarriageReturn(span, contentLength - Unit)) contentLength -= Unit;
+            next = nl + Unit;
         }
         else if (avail <= maxLine)
         {
@@ -91,12 +118,10 @@ internal sealed class LineScanner
         }
         else
         {
-            int cut = maxLine;         // м’який розрив
-            if (utf8)
-                while (cut > 0 && (span[cut] & 0xC0) == 0x80) cut--;   // не різати UTF-8 символ
-            if (cut == 0) cut = maxLine;
+            int cut = SoftBreakPosition(span);
             contentLength = cut;
             next = cut;
+            LastWasSoftBreak = true;
         }
 
         lastOffset = rel;
@@ -105,36 +130,46 @@ internal sealed class LineScanner
         return true;
     }
 
+    /// <summary>Де розірвати задовгий рядок, не розрізаючи символ (UTF-8 послідовність чи сурогатну пару UTF-16).</summary>
+    int SoftBreakPosition(ReadOnlySpan<byte> span)
+    {
+        int cut = maxLine;
+        if (layout.Utf8)
+        {
+            while (cut > 0 && (span[cut] & 0xC0) == 0x80) cut--;
+        }
+        else if (Unit == 2 && cut >= 2)
+        {
+            int prev = layout.BigEndian ? span[cut - 2] << 8 | span[cut - 1] : span[cut - 1] << 8 | span[cut - 2];
+            if (prev is >= 0xD800 and <= 0xDBFF) cut -= 2;   // висока половина сурогатної пари лишається з низькою
+        }
+        return cut > 0 ? cut : maxLine;
+    }
+
     void EnsureWindow()
     {
-        long need = Math.Min(end, pos + maxLine + unit * 2);
+        long need = Math.Min(end, pos + maxLine + Unit * 2);
         if (pos >= bufStart && need <= bufStart + bufLen) return;
         stream.Position = pos;
         bufStart = pos;
-        bufLen = 0;
         int toRead = (int)Math.Min(buf.Length, end - pos);
-        while (bufLen < toRead)
-        {
-            int n = stream.Read(buf, bufLen, toRead - bufLen);
-            if (n <= 0) break;
-            bufLen += n;
-        }
+        bufLen = stream.ReadAtLeast(buf.AsSpan(0, toRead), toRead, throwOnEndOfStream: false);
     }
 
     int FindNewline(ReadOnlySpan<byte> span)
     {
-        if (unit == 1) return span.IndexOf((byte)'\n');
+        if (Unit == 1) return span.IndexOf((byte)'\n');
         for (int i = 0; i + 1 < span.Length; i += 2)
         {
-            bool lf = bigEndian ? span[i] == 0 && span[i + 1] == 0x0A : span[i] == 0x0A && span[i + 1] == 0;
+            bool lf = layout.BigEndian ? span[i] == 0 && span[i + 1] == 0x0A : span[i] == 0x0A && span[i + 1] == 0;
             if (lf) return i;
         }
         return -1;
     }
 
     bool IsCarriageReturn(ReadOnlySpan<byte> span, int i) =>
-        unit == 1 ? span[i] == (byte)'\r'
-        : bigEndian ? span[i] == 0 && span[i + 1] == 0x0D
+        Unit == 1 ? span[i] == (byte)'\r'
+        : layout.BigEndian ? span[i] == 0 && span[i + 1] == 0x0D
         : span[i] == 0x0D && span[i + 1] == 0;
 }
 
@@ -144,11 +179,11 @@ public sealed class TextRowSource : IRowSource
     public const int MaxLineBytes = 16 * 1024;
     internal const int CheckpointEvery = 256;
     const int TabSize = 4;
+    static readonly TimeSpan ReportEvery = TimeSpan.FromMilliseconds(150);
 
     readonly string path;
     readonly Encoding encoding;
-    readonly int unit;
-    readonly bool bigEndian, utf8;
+    readonly CodeUnitLayout layout;
     readonly long dataStart, length;
     readonly List<long> checkpoints = new();   // початок рядків 0, 256, 512, …
     readonly object gate = new();
@@ -162,12 +197,12 @@ public sealed class TextRowSource : IRowSource
     {
         this.path = path;
         this.encoding = encoding;
-        unit = encoding is UnicodeEncoding ? 2 : 1;
-        bigEndian = encoding.CodePage == 1201;
-        utf8 = encoding is UTF8Encoding;
-        reader = OpenShared(path);
+        layout = CodeUnitLayout.From(encoding);
+        reader = Util.OpenShared(path, FileOptions.RandomAccess);
         length = reader.Length;
-        dataStart = PreambleLength(reader, encoding);
+        Span<byte> head = stackalloc byte[4];
+        int n = reader.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+        dataStart = TextEncodings.PreambleLength(head[..n], encoding);
         checkpoints.Add(dataStart);
         Task.Run(Index);
     }
@@ -178,41 +213,26 @@ public sealed class TextRowSource : IRowSource
     public bool ShowLineNumbers => true;
     public event Action? RowCountChanged;
 
-    internal static FileStream OpenShared(string path) =>
-        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.RandomAccess);
-
-    static int PreambleLength(FileStream fs, Encoding enc)
-    {
-        Span<byte> head = stackalloc byte[4];
-        fs.Position = 0;
-        int n = fs.Read(head);
-        var pre = enc.GetPreamble();
-        if (pre.Length > 0 && n >= pre.Length && head[..pre.Length].SequenceEqual(pre)) return pre.Length;
-        if (enc is UTF8Encoding && n >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF) return 3;
-        return 0;
-    }
-
-    LineScanner Scanner(Stream s, long start) => new(s, start, length, unit, bigEndian, utf8, MaxLineBytes);
+    LineScanner Scanner(Stream s, long start) => new(s, start, length, layout, MaxLineBytes);
 
     void Index()
     {
         try
         {
-            using var fs = OpenShared(path);
+            using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
             var sc = Scanner(fs, dataStart);
             long n = 0;
-            var sw = Stopwatch.StartNew();
+            var report = new Throttle(ReportEvery);
             while (sc.Next(out var start, out _))
             {
                 if (n > 0 && n % CheckpointEvery == 0)
                     lock (gate) checkpoints.Add(start);
                 n++;
-                if (sw.ElapsedMilliseconds >= 150)
+                if (report.Due())
                 {
                     cts.Token.ThrowIfCancellationRequested();
                     Interlocked.Exchange(ref rowCount, n);
                     RowCountChanged?.Invoke();
-                    sw.Restart();
                 }
             }
             Interlocked.Exchange(ref rowCount, n);
@@ -276,23 +296,39 @@ public sealed class TextRowSource : IRowSource
     public TextMatch? Find(string query, long fromRow, int fromColumn, CancellationToken ct, Action<double>? progress = null)
     {
         if (query.Length == 0) return null;
-        using var fs = OpenShared(path);
+        using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
         var sc = SeekRow(fs, fromRow, out var row);
         if (row != fromRow) return null;
-        var sw = Stopwatch.StartNew();
+        var report = new Throttle(TimeSpan.FromMilliseconds(100));
         double span = Math.Max(1, length - dataStart);
+
+        // Хвіст попереднього рядка, якщо він закінчився м’яким розривом: збіг може перетинати межу.
+        string? prevTail = null;
+        int prevLength = 0;
         while (sc.Next(out var start, out _))
         {
             var line = ToDisplay(encoding.GetString(sc.LastContent));
+
+            if (prevTail != null)
+            {
+                var joined = prevTail + line[..Math.Min(line.Length, query.Length - 1)];
+                int j = joined.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+                int col = prevLength - prevTail.Length + j;
+                if (j >= 0 && j < prevTail.Length && (row - 1 != fromRow || col >= fromColumn))
+                    return new TextMatch(row - 1, col, query.Length, SpillOver: j + query.Length - prevTail.Length);
+            }
+
             int from = row == fromRow ? Math.Min(fromColumn, line.Length) : 0;
             int idx = line.IndexOf(query, from, StringComparison.OrdinalIgnoreCase);
             if (idx >= 0) return new TextMatch(row, idx, query.Length);
+
+            prevTail = sc.LastWasSoftBreak && query.Length > 1 ? line[^Math.Min(line.Length, query.Length - 1)..] : null;
+            prevLength = line.Length;
             row++;
-            if (sw.ElapsedMilliseconds >= 100)
+            if (report.Due())
             {
                 ct.ThrowIfCancellationRequested();
                 progress?.Invoke((start - dataStart) / span);
-                sw.Restart();
             }
         }
         return null;
@@ -300,7 +336,8 @@ public sealed class TextRowSource : IRowSource
 
     public IEnumerable<(int Column, int Length)> GetHighlights(long row, TextMatch match)
     {
-        if (row == match.Row) yield return (match.Column, match.Length);
+        if (row == match.Row) yield return (match.Column, match.Length - match.SpillOver);
+        else if (row == match.Row + 1 && match.SpillOver > 0) yield return (0, match.SpillOver);
     }
 
     public void Dispose()
@@ -324,7 +361,7 @@ public sealed class HexRowSource : IRowSource
     public HexRowSource(string path)
     {
         this.path = path;
-        reader = TextRowSource.OpenShared(path);
+        reader = Util.OpenShared(path, FileOptions.RandomAccess);
         length = reader.Length;
     }
 
@@ -339,19 +376,14 @@ public sealed class HexRowSource : IRowSource
         long offset = first * BytesPerRow;
         if (offset >= length) return rows;
         var bytes = new byte[(int)Math.Min((long)count * BytesPerRow, length - offset)];
+        int read;
         lock (reader)
         {
             reader.Position = offset;
-            int read = 0;
-            while (read < bytes.Length)
-            {
-                int n = reader.Read(bytes, read, bytes.Length - read);
-                if (n <= 0) break;
-                read += n;
-            }
+            read = reader.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
         }
-        for (int r = 0; r * BytesPerRow < bytes.Length; r++)
-            rows.Add(FormatRow(offset + (long)r * BytesPerRow, bytes.AsSpan(r * BytesPerRow, Math.Min(BytesPerRow, bytes.Length - r * BytesPerRow))));
+        for (int r = 0; r * BytesPerRow < read; r++)
+            rows.Add(FormatRow(offset + (long)r * BytesPerRow, bytes.AsSpan(r * BytesPerRow, Math.Min(BytesPerRow, read - r * BytesPerRow))));
         return rows;
     }
 
@@ -386,13 +418,13 @@ public sealed class HexRowSource : IRowSource
     {
         var pattern = ParseQuery(query);
         if (pattern.Length == 0) return null;
-        using var fs = TextRowSource.OpenShared(path);
+        using var fs = Util.OpenShared(path, FileOptions.SequentialScan);
         long start = fromRow * BytesPerRow + fromColumn;
         if (start >= length) return null;
         var buf = new byte[(1 << 20) + pattern.Length];
         long bufOffset = start;
         int carry = 0;
-        var sw = Stopwatch.StartNew();
+        var report = new Throttle(TimeSpan.FromMilliseconds(100));
         fs.Position = start;
         while (true)
         {
@@ -408,11 +440,10 @@ public sealed class HexRowSource : IRowSource
             carry = Math.Min(pattern.Length - 1, total);
             Array.Copy(buf, total - carry, buf, 0, carry);
             bufOffset += total - carry;
-            if (sw.ElapsedMilliseconds >= 100)
+            if (report.Due())
             {
                 ct.ThrowIfCancellationRequested();
                 progress?.Invoke((double)bufOffset / Math.Max(1, length));
-                sw.Restart();
             }
         }
     }

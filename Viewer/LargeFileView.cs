@@ -194,22 +194,22 @@ public sealed class LargeFileView : Grid
 
         protected override void OnRender(DrawingContext dc)
         {
-            dc.DrawRectangle(Res("InputBrush"), null, new Rect(RenderSize));
+            dc.DrawRectangle(Res(ThemeKeys.InputBrush), null, new Rect(RenderSize));
             var src = owner.source;
             if (src == null) return;
 
             int visible = owner.VisibleRows + 1;
             long top = owner.topRow;
             var rows = src.GetRows(top, visible);
-            var fg = Res("TextBrush");
-            var dim = Res("TextDimBrush");
-            var hl = Res("SelectionBrush");
+            var fg = Res(ThemeKeys.TextBrush);
+            var dim = Res(ThemeKeys.TextDimBrush);
+            var hl = Res(ThemeKeys.SelectionBrush);
 
             if (src.ShowLineNumbers)
             {
                 int digits = Math.Max(3, (top + visible).ToString().Length);
                 GutterWidth = (digits + 2) * CharWidth;
-                dc.DrawRectangle(Res("PanelBrush"), null, new Rect(0, 0, GutterWidth - CharWidth / 2, RenderSize.Height));
+                dc.DrawRectangle(Res(ThemeKeys.PanelBrush), null, new Rect(0, 0, GutterWidth - CharWidth / 2, RenderSize.Height));
             }
             else GutterWidth = CharWidth;
 

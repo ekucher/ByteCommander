@@ -77,7 +77,7 @@ public partial class FilePanel : UserControl
         set
         {
             isActivePanel = value;
-            Root.SetResourceReference(Border.BorderBrushProperty, value ? "AccentBrush" : "LineBrush");
+            Root.SetResourceReference(Border.BorderBrushProperty, value ? ThemeKeys.AccentBrush : ThemeKeys.LineBrush);
         }
     }
 
@@ -566,7 +566,7 @@ public partial class FilePanel : UserControl
             if (i > 0)
             {
                 var sep = Util.Glyph("", 9);
-                sep.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+                sep.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
                 sep.Margin = new Thickness(1, 1, 1, 0);
                 CrumbPanel.Children.Add(sep);
             }
@@ -797,7 +797,7 @@ public partial class FilePanel : UserControl
             if (items[i].Name.StartsWith(quick, StringComparison.OrdinalIgnoreCase)) idx = i;
         for (int i = 0; i < items.Count && idx < 0; i++)
             if (items[i].Name.Contains(quick, StringComparison.OrdinalIgnoreCase)) idx = i;
-        QuickSearchBorder.SetResourceReference(Border.BackgroundProperty, idx >= 0 ? "AccentBrush" : "DangerBrush");
+        QuickSearchBorder.SetResourceReference(Border.BackgroundProperty, idx >= 0 ? ThemeKeys.AccentBrush : ThemeKeys.DangerBrush);
         if (idx >= 0) Select(idx, true);
     }
 

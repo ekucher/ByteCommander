@@ -103,7 +103,7 @@ public sealed class ViewerWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(12, 0, 0, 0),
         };
-        findHint.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        findHint.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
         findPanel.Children.Add(findHint);
         findBar = new Border { Padding = new Thickness(10, 6, 10, 0), Child = findPanel, Visibility = Visibility.Collapsed };
         findBox.KeyDown += (_, e) =>
@@ -120,7 +120,7 @@ public sealed class ViewerWindow : Window
             if (mode == Mode.Large) large.ClearMatch();
         };
 
-        info.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        info.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
         var status = new Border { Padding = new Thickness(12, 5, 12, 7), Child = info };
 
         var host = new Border
@@ -131,8 +131,8 @@ public sealed class ViewerWindow : Window
             ClipToBounds = true,
             Child = content,
         };
-        host.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
-        host.SetResourceReference(Border.BackgroundProperty, "InputBrush");
+        host.SetResourceReference(Border.BorderBrushProperty, ThemeKeys.LineBrush);
+        host.SetResourceReference(Border.BackgroundProperty, ThemeKeys.InputBrush);
 
         var dock = new DockPanel();
         DockPanel.SetDock(bar, Dock.Top);
@@ -177,7 +177,7 @@ public sealed class ViewerWindow : Window
             var fi = new FileInfo(path);
             if (edit && fi.Length > MaxTextBoxBytes)
             {
-                Dialogs.Error(this, "Файл завеликий для вбудованого редактора (понад 8 МБ). Відкрийте його на перегляд (F3).");
+                Dialogs.Error(this, $"Файл завеликий для вбудованого редактора (понад {Util.FormatSize(MaxTextBoxBytes)}). Відкрийте його на перегляд (F3).");
                 Close();
                 return;
             }
@@ -185,10 +185,10 @@ public sealed class ViewerWindow : Window
             var head = ReadHead((int)Math.Min(fi.Length, 64 * 1024));
             if (!edit && !hexDecided)
             {
-                hex = LooksBinary(head);
+                hex = TextEncodings.LooksBinary(head);
                 hexDecided = true;
             }
-            if (!encChosen) enc = Detect(head, truncated: fi.Length > head.Length);
+            if (!encChosen) enc = TextEncodings.Detect(head, truncated: fi.Length > head.Length);
 
             if (!edit && (hex || fi.Length > MaxTextBoxBytes)) ShowLarge(fi);
             else ShowSmallText(fi);
@@ -212,16 +212,14 @@ public sealed class ViewerWindow : Window
         loading = false;
         text.CaretIndex = 0;
         text.ScrollToHome();
-        int lines = 1;
-        foreach (var c in text.Text) if (c == '\n') lines++;
-        info.Text = $"{Util.FormatSize(fi.Length)}  ·  {EncodingName(enc)}  ·  {lines:N0} рядків";
+        info.Text = $"{Util.FormatSize(fi.Length)}  ·  {TextEncodings.NameOf(enc)}  ·  {TextEncodings.CountLines(text.Text):N0} рядків";
         text.Focus();
     }
 
     void ShowLarge(FileInfo fi)
     {
         SetContent(Mode.Large, large);
-        baseInfo = $"{Util.FormatSize(fi.Length)}  ·  {(hex ? "HEX" : EncodingName(enc))}";
+        baseInfo = $"{Util.FormatSize(fi.Length)}  ·  {(hex ? "HEX" : TextEncodings.NameOf(enc))}";
         large.SetSource(hex ? new HexRowSource(path) : new TextRowSource(path, enc));
         large.Focus();
     }
@@ -244,16 +242,9 @@ public sealed class ViewerWindow : Window
     byte[] ReadHead(int count)
     {
         var buf = new byte[count];
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        int read = 0;
-        while (read < count)
-        {
-            int n = fs.Read(buf, read, count - read);
-            if (n <= 0) break;
-            read += n;
-        }
-        if (read < count) Array.Resize(ref buf, read);
-        return buf;
+        using var fs = Util.OpenShared(path);
+        int read = fs.ReadAtLeast(buf, count, throwOnEndOfStream: false);
+        return read < count ? buf[..read] : buf;
     }
 
     bool TryShowImage()
@@ -303,68 +294,26 @@ public sealed class ViewerWindow : Window
         if (!TryShowImage()) info.Text = "Не вдалося відкрити " + Path.GetFileName(path);
     }
 
-    static bool LooksBinary(byte[] b)
-    {
-        if (b.Length >= 2 && ((b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF))) return false;
-        int n = Math.Min(b.Length, 8192);
-        for (int i = 0; i < n; i++) if (b[i] == 0) return true;
-        return false;
-    }
-
-    static Encoding Detect(byte[] b, bool truncated)
-    {
-        if (b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) return new UTF8Encoding(true);
-        if (b.Length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return new UnicodeEncoding(false, true);
-        if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return new UnicodeEncoding(true, true);
-        try
-        {
-            // Хвіст обрізаного фрагмента може розрізати UTF-8 символ — не враховуємо останні байти.
-            int len = truncated ? Math.Max(0, b.Length - 4) : b.Length;
-            new UTF8Encoding(false, true).GetString(b, 0, len);
-            return new UTF8Encoding(false);
-        }
-        catch (DecoderFallbackException)
-        {
-            return Encoding.GetEncoding(1251);
-        }
-    }
-
     string Decode(byte[] b)
     {
-        int skip = 0;
-        var pre = enc.GetPreamble();
-        if (pre.Length > 0 && b.Length >= pre.Length && b.AsSpan(0, pre.Length).SequenceEqual(pre)) skip = pre.Length;
-        else if (enc is UTF8Encoding && b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) skip = 3;
+        int skip = TextEncodings.PreambleLength(b, enc);
         return enc.GetString(b, skip, b.Length - skip);
     }
-
-    static string EncodingName(Encoding e) => e switch
-    {
-        UTF8Encoding u => u.GetPreamble().Length > 0 ? "UTF-8 BOM" : "UTF-8",
-        UnicodeEncoding => e.CodePage == 1201 ? "UTF-16 BE" : "UTF-16 LE",
-        _ => e.CodePage switch { 1251 => "Windows-1251", 866 => "DOS-866", 21866 => "KOI8-U", _ => e.WebName },
-    };
 
     // ------------------------------------------------------------------ дії
 
     void ShowEncodingMenu()
     {
         var m = new ContextMenu();
-        void Add(string name, Func<Encoding> make)
+        foreach (var choice in TextEncodings.Choices)
         {
-            m.Items.Add(Util.MakeMenuItem(EncodingName(enc) == name ? "" : "", name, null, () =>
+            m.Items.Add(Util.MakeMenuItem(TextEncodings.NameOf(enc) == choice.Name ? "\uE73E" : "", choice.Name, null, () =>
             {
-                enc = make();
+                enc = choice.Create();
                 encChosen = true;
                 if (!dirty) Load();
             }));
         }
-        Add("UTF-8", () => new UTF8Encoding(false));
-        Add("UTF-8 BOM", () => new UTF8Encoding(true));
-        Add("Windows-1251", () => Encoding.GetEncoding(1251));
-        Add("DOS-866", () => Encoding.GetEncoding(866));
-        Add("KOI8-U", () => Encoding.GetEncoding(21866));
-        Add("UTF-16 LE", () => new UnicodeEncoding(false, true));
         m.PlacementTarget = encButton;
         m.Placement = PlacementMode.Bottom;
         m.IsOpen = true;
@@ -404,7 +353,7 @@ public sealed class ViewerWindow : Window
         if (idx < 0) idx = t.IndexOf(q, 0, StringComparison.OrdinalIgnoreCase);
         if (idx < 0)
         {
-            findBox.SetResourceReference(BorderBrushProperty, "DangerBrush");
+            findBox.SetResourceReference(BorderBrushProperty, ThemeKeys.DangerBrush);
             return;
         }
         findBox.ClearValue(BorderBrushProperty);
@@ -435,13 +384,20 @@ public sealed class ViewerWindow : Window
             UpdateLargeInfo();
             if (found is { } f)
             {
+                // Пошук іде по файлу незалежно від індексу; прокрутка ж обмежена вже проіндексованими рядками.
+                while (!src.IsComplete && src.RowCount <= f.Row + 1)
+                {
+                    info.Text = $"Знайдено в рядку {f.Row + 1:N0} — чекаю індексацію ({src.RowCount:N0})…  ·  Esc — зупинити";
+                    await Task.Delay(100, cts.Token);
+                }
+                if (large.Source != src) return;
                 findBox.ClearValue(BorderBrushProperty);
                 large.ShowMatch(f);
                 if (wrapped) info.Text += "  ·  пошук продовжено з початку";
             }
             else
             {
-                findBox.SetResourceReference(BorderBrushProperty, "DangerBrush");
+                findBox.SetResourceReference(BorderBrushProperty, ThemeKeys.DangerBrush);
                 info.Text += $"  ·  «{q}» не знайдено";
             }
         }
@@ -462,15 +418,17 @@ public sealed class ViewerWindow : Window
         {
             var pre = enc.GetPreamble();
             var body = enc.GetBytes(text.Text);
-            using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read))
+            // Через тимчасовий файл: збій посеред запису (місце на диску, знімний носій) не знищить оригінал.
+            // File.Replace зберігає атрибути, дату створення й права наявного файлу.
+            Util.WriteViaTemp(path, tmp =>
             {
-                fs.SetLength(0);
+                using var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write);
                 fs.Write(pre);
                 fs.Write(body);
-            }
+            }, keepDestinationMetadata: true);
             dirty = false;
             UpdateTitle();
-            info.Text = $"Збережено о {DateTime.Now:HH:mm:ss}  ·  {EncodingName(enc)}  ·  {Util.FormatSize(pre.Length + body.Length)}";
+            info.Text = $"Збережено о {DateTime.Now:HH:mm:ss}  ·  {TextEncodings.NameOf(enc)}  ·  {Util.FormatSize(pre.Length + body.Length)}";
             return true;
         }
         catch (Exception ex)

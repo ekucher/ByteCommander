@@ -1,0 +1,83 @@
+using System.Text;
+
+namespace ByteCommander.Services;
+
+/// <summary>
+/// Усе про кодування текстових файлів в одному місці: перелік кодувань для меню, назви,
+/// розпізнавання BOM і евристика «UTF-8 чи Windows-1251».
+/// </summary>
+public static class TextEncodings
+{
+    public sealed record Choice(string Name, Func<Encoding> Create);
+
+    /// <summary>Кодування, які можна вибрати в переглядачі (у цьому порядку в меню).</summary>
+    public static readonly IReadOnlyList<Choice> Choices = new Choice[]
+    {
+        new("UTF-8", () => new UTF8Encoding(false)),
+        new("UTF-8 BOM", () => new UTF8Encoding(true)),
+        new("Windows-1251", () => Encoding.GetEncoding(1251)),
+        new("DOS-866", () => Encoding.GetEncoding(866)),
+        new("KOI8-U", () => Encoding.GetEncoding(21866)),
+        new("UTF-16 LE", () => new UnicodeEncoding(false, true)),
+    };
+
+    public static bool IsUtf16(Encoding e) => e is UnicodeEncoding;
+    public static bool IsUtf16BigEndian(Encoding e) => e.CodePage == 1201;
+
+    public static string NameOf(Encoding e) => e switch
+    {
+        UTF8Encoding u => u.GetPreamble().Length > 0 ? "UTF-8 BOM" : "UTF-8",
+        UnicodeEncoding => IsUtf16BigEndian(e) ? "UTF-16 BE" : "UTF-16 LE",
+        _ => e.CodePage switch { 1251 => "Windows-1251", 866 => "DOS-866", 21866 => "KOI8-U", _ => e.WebName },
+    };
+
+    public static bool HasUtf8Bom(ReadOnlySpan<byte> head) =>
+        head.Length >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF;
+
+    /// <summary>
+    /// Скільки байтів на початку — BOM, який треба пропустити при читанні цим кодуванням.
+    /// UTF-8 BOM пропускається навіть для UTF-8 без BOM (щоб у тексті не з’являвся U+FEFF).
+    /// </summary>
+    public static int PreambleLength(ReadOnlySpan<byte> head, Encoding encoding)
+    {
+        var pre = encoding.GetPreamble();
+        if (pre.Length > 0 && head.Length >= pre.Length && head[..pre.Length].SequenceEqual(pre)) return pre.Length;
+        if (encoding is UTF8Encoding && HasUtf8Bom(head)) return 3;
+        return 0;
+    }
+
+    /// <summary>Кодування за BOM; без BOM — UTF-8, якщо байти валідні як UTF-8, інакше Windows-1251.</summary>
+    /// <param name="truncated">Фрагмент обрізано — останній UTF-8 символ може бути неповним.</param>
+    public static Encoding Detect(ReadOnlySpan<byte> head, bool truncated)
+    {
+        if (HasUtf8Bom(head)) return new UTF8Encoding(true);
+        if (head.Length >= 2 && head[0] == 0xFF && head[1] == 0xFE) return new UnicodeEncoding(false, true);
+        if (head.Length >= 2 && head[0] == 0xFE && head[1] == 0xFF) return new UnicodeEncoding(true, true);
+        try
+        {
+            int len = truncated ? Math.Max(0, head.Length - 4) : head.Length;
+            new UTF8Encoding(false, true).GetCharCount(head[..len]);
+            return new UTF8Encoding(false);
+        }
+        catch (DecoderFallbackException)
+        {
+            return Encoding.GetEncoding(1251);
+        }
+    }
+
+    /// <summary>Двійковий файл: є нульові байти в перших 8 КБ (UTF-16 з BOM — не двійковий).</summary>
+    public static bool LooksBinary(ReadOnlySpan<byte> head)
+    {
+        if (head.Length >= 2 && ((head[0] == 0xFF && head[1] == 0xFE) || (head[0] == 0xFE && head[1] == 0xFF))) return false;
+        return head[..Math.Min(head.Length, 8192)].IndexOf((byte)0) >= 0;
+    }
+
+    /// <summary>Рядки так, як їх показує переглядач: кількість LF, плюс останній рядок без LF (якщо є).</summary>
+    public static int CountLines(string text)
+    {
+        if (text.Length == 0) return 0;
+        int n = 0;
+        foreach (var c in text) if (c == '\n') n++;
+        return text[^1] == '\n' ? n : n + 1;
+    }
+}

@@ -39,6 +39,16 @@ public sealed class TestWorkspace : IDisposable
         return d;
     }
 
+    /// <summary>Записати файл у підкаталог робочого каталогу (підкаталог — зазвичай ім'я тестового класу).</summary>
+    public string WriteFile(string group, string name, byte[] bytes)
+    {
+        var dir = Path.Combine(Root, group);
+        Directory.CreateDirectory(dir);
+        var p = Path.Combine(dir, name);
+        File.WriteAllBytes(p, bytes);
+        return p;
+    }
+
     /// <summary>Той самий каталог, але шлях через інший том.</summary>
     public string ViaOtherVolume(string pathUnderRoot) =>
         Path.Combine(OtherVolumeRoot, Path.GetRelativePath(Root, pathUnderRoot));

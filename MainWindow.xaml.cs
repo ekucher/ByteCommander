@@ -243,10 +243,10 @@ public partial class MainWindow : Window
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
             var keyText = new TextBlock { Text = cmd.Keys[0].ToString(), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 0) };
-            keyText.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+            keyText.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.AccentBrush);
             sp.Children.Add(keyText);
             var labelText = new TextBlock { Text = label };
-            labelText.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+            labelText.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
             sp.Children.Add(labelText);
             var b = new Button { Content = sp, Style = (Style)FindResource("FKeyButton"), ToolTip = cmd.Title };
             b.Click += (_, _) => cmd.Run();
@@ -758,7 +758,7 @@ public partial class MainWindow : Window
     void UpdateHiddenButton()
     {
         HiddenButton.Content = FilePanel.ShowHidden ? "\uE7B3" : "\uED1A";
-        HiddenButton.SetResourceReference(ForegroundProperty, FilePanel.ShowHidden ? "AccentBrush" : "TextDimBrush");
+        HiddenButton.SetResourceReference(ForegroundProperty, FilePanel.ShowHidden ? ThemeKeys.AccentBrush : ThemeKeys.TextDimBrush);
     }
 
     void SetTheme(AppTheme theme)
@@ -770,24 +770,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Кнопка теми: як у системі → темна → світла → …</summary>
-    void CycleTheme() => SetTheme(ThemeManager.Current switch
-    {
-        AppTheme.System => AppTheme.Dark,
-        AppTheme.Dark => AppTheme.Light,
-        _ => AppTheme.System,
-    });
-
-    protected override void OnSourceInitialized(EventArgs e)
-    {
-        base.OnSourceInitialized(e);
-        // WM_SETTINGCHANGE з "ImmersiveColorSet" — користувач змінив тему Windows.
-        HwndSource.FromHwnd(Hwnd)?.AddHook((IntPtr h, int msg, IntPtr wp, IntPtr lp, ref bool handled) =>
-        {
-            if (msg == 0x001A && lp != IntPtr.Zero && System.Runtime.InteropServices.Marshal.PtrToStringUni(lp) == "ImmersiveColorSet")
-                ThemeManager.OnSystemThemeChanged();
-            return IntPtr.Zero;
-        });
-    }
+    void CycleTheme() => SetTheme(ThemeManager.Next(ThemeManager.Current));
 
     void SwapPanels()
     {

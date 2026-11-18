@@ -36,8 +36,8 @@ public sealed class ProgressWindow : Window
         FontFamily = (FontFamily)Application.Current.FindResource("UiFont");
         FontSize = 13;
 
-        file.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
-        stats.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        file.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
+        stats.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
         var cancel = new Button { Content = "Скасувати", HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 110, Margin = new Thickness(0, 18, 0, 0) };
         cancel.Click += (_, _) =>
         {

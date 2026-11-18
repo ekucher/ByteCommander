@@ -8,6 +8,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using ByteCommander.Services;
 
 namespace ByteCommander;
 
@@ -50,7 +51,7 @@ public sealed class SearchWindow : Window
         FontSize = 13;
         UseLayoutRounding = true;
         where.Text = startDir;
-        status.SetResourceReference(TextBlock.ForegroundProperty, "TextDimBrush");
+        status.SetResourceReference(TextBlock.ForegroundProperty, ThemeKeys.TextDimBrush);
 
         var form = new Grid();
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -95,8 +96,8 @@ public sealed class SearchWindow : Window
             Margin = new Thickness(0, 12, 0, 0),
             Padding = new Thickness(2),
         };
-        resultsHost.SetResourceReference(Border.BorderBrushProperty, "LineBrush");
-        resultsHost.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
+        resultsHost.SetResourceReference(Border.BorderBrushProperty, ThemeKeys.LineBrush);
+        resultsHost.SetResourceReference(Border.BackgroundProperty, ThemeKeys.PanelBrush);
         results.Margin = new Thickness(0);
 
         var root = new DockPanel { Margin = new Thickness(16) };
@@ -278,7 +279,7 @@ public sealed class SearchWindow : Window
     static bool HasUtf8Bom(string path)
     {
         Span<byte> b = stackalloc byte[3];
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        return fs.Read(b) == 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF;
+        using var fs = Util.OpenShared(path);
+        return TextEncodings.HasUtf8Bom(b[..fs.ReadAtLeast(b, b.Length, throwOnEndOfStream: false)]);
     }
 }
