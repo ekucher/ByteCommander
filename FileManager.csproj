@@ -11,6 +11,9 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Version>0.1.0</Version>
     <Product>Byte Commander</Product>
+    <Authors>ekucher</Authors>
+    <Copyright>Copyright (c) 2026 ekucher. MIT License.</Copyright>
+    <RepositoryUrl>https://github.com/ekucher/ByteCommander</RepositoryUrl>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 

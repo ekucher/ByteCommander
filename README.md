@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/ekucher/ByteCommander/actions/workflows/ci.yml/badge.svg)](https://github.com/ekucher/ByteCommander/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
+[![Release](https://img.shields.io/github/v/release/ekucher/ByteCommander?include_prereleases)](https://github.com/ekucher/ByteCommander/releases/latest)
 ![.NET](https://img.shields.io/badge/.NET-10-512BD4)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Двопанельний файловий менеджер для Windows у дусі **Total Commander** і **Far Manager**, але з сучасним інтерфейсом:
 вкладки, хлібні крихти, палітра команд, темна тема, нативне контекстне меню Провідника. Клавіатура лишається головним
@@ -43,9 +45,21 @@
 
 ## Встановлення
 
-**Вимоги:** Windows 10/11 x64 і [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (для збирання — .NET 10 SDK).
+Завантажте архів зі сторінки [Releases](https://github.com/ekucher/ByteCommander/releases/latest) (Windows 10/11 x64):
 
-Готова збірка є в артефакті `ByteCommander-win-x64` останнього успішного запуску [CI](https://github.com/ekucher/ByteCommander/actions/workflows/ci.yml) (потрібен вхід у GitHub). Або зберіть самі:
+| Файл | Для кого |
+|---|---|
+| `ByteCommander-<версія>-win-x64-selfcontained.zip` | **Рекомендовано.** Розпакуйте й запустіть `ByteCommander.exe`, нічого встановлювати не треба |
+| `ByteCommander-<версія>-win-x64.zip` | Маленький (менше 1 МБ), потрібен [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) |
+
+> **Попередження SmartScreen.** `.exe` не підписаний цифровим сертифікатом, тому при першому запуску Windows може
+> показати «Windows захистив ваш ПК». Натисніть **Докладніше → Виконати однаково**. Цілісність завантаження можна
+> перевірити за контрольними сумами з `SHA256SUMS.txt` у релізі:
+> `Get-FileHash .\ByteCommander-*.zip -Algorithm SHA256`
+
+### Збирання з коду
+
+Потрібен .NET 10 SDK.
 
 ```powershell
 git clone https://github.com/ekucher/ByteCommander.git
@@ -53,6 +67,16 @@ cd ByteCommander
 dotnet build -c Release
 .\bin\Release\net10.0-windows\ByteCommander.exe [лівий_каталог] [правий_каталог]
 ```
+
+### Новий реліз
+
+```powershell
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Workflow `Release` прожене тести, збере обидва варіанти й опублікує реліз з архівами та контрольними сумами.
+Теги з дефісом (`v0.2.0-beta`) публікуються як pre-release.
 
 ## Тести
 
@@ -158,3 +182,7 @@ CI на GitHub Actions (`windows-latest`) збирає застосунок, п�
 | ← → PgUp PgDn | Попереднє / наступне зображення |
 
 Переглядач показує перші 8 МБ тексту (1 МБ у hex-режимі).
+
+## Ліцензія
+
+[MIT](LICENSE) © 2026 ekucher
