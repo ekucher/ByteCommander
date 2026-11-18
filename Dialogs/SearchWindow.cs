@@ -207,13 +207,9 @@ public sealed class SearchWindow : Window
 
     void Worker(string root, string[] masks, string text, bool recurse, CancellationToken ct)
     {
-        var opts = new EnumerationOptions
-        {
-            IgnoreInaccessible = true,
-            RecurseSubdirectories = recurse,
-            AttributesToSkip = 0,
-            MaxRecursionDepth = 64,
-        };
+        var opts = recurse
+            ? Util.DeepScan
+            : new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0 };
         foreach (var fsi in new DirectoryInfo(root).EnumerateFileSystemInfos("*", opts))
         {
             ct.ThrowIfCancellationRequested();
@@ -233,26 +229,57 @@ public sealed class SearchWindow : Window
         }
     }
 
+    // Кодування для файлів без BOM, у яких текст не знайшовся як UTF-8 (типові для кирилиці у Windows).
+    static readonly Lazy<Encoding[]> LegacyEncodings = new(() => new[] { Encoding.GetEncoding(1251), Encoding.GetEncoding(866) });
+
+    /// <summary>
+    /// Чи містить файл текст (без урахування регістру). Спершу UTF-8 / UTF-16 за BOM;
+    /// якщо BOM немає, а шуканий текст не-ASCII, — ще Windows-1251 і CP866.
+    /// </summary>
     static bool FileContains(string path, string text, CancellationToken ct)
     {
         try
         {
             if (new FileInfo(path).Length > 256L * 1024 * 1024) return false;
-            using var sr = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
-            var buf = new char[1 << 16];
-            string carry = "";
-            int n;
-            while ((n = sr.Read(buf, 0, buf.Length)) > 0)
-            {
-                ct.ThrowIfCancellationRequested();
-                var chunk = carry + new string(buf, 0, n);
-                if (chunk.Contains(text, StringComparison.OrdinalIgnoreCase)) return true;
-                int keep = Math.Min(chunk.Length, text.Length - 1);
-                carry = chunk[^keep..];
-            }
+            if (Scan(path, text, Encoding.UTF8, detectBom: true, ct, out bool hadBom)) return true;
+            if (hadBom || text.All(c => c < 128)) return false;
+            foreach (var enc in LegacyEncodings.Value)
+                if (Scan(path, text, enc, detectBom: false, ct, out _)) return true;
         }
         catch (OperationCanceledException) { throw; }
         catch { }
         return false;
+    }
+
+    static bool Scan(string path, string text, Encoding encoding, bool detectBom, CancellationToken ct, out bool hadBom)
+    {
+        using var sr = new StreamReader(path, encoding, detectBom, bufferSize: 1 << 16);
+        var buf = new char[1 << 16];
+        string carry = "";
+        int n;
+        bool first = true;
+        hadBom = false;
+        while ((n = sr.Read(buf, 0, buf.Length)) > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (first)
+            {
+                // StreamReader змінює CurrentEncoding лише якщо знайшов BOM (UTF-8 з BOM, UTF-16, UTF-32)
+                hadBom = detectBom && (sr.CurrentEncoding is not UTF8Encoding || HasUtf8Bom(path));
+                first = false;
+            }
+            var chunk = carry + new string(buf, 0, n);
+            if (chunk.Contains(text, StringComparison.OrdinalIgnoreCase)) return true;
+            int keep = Math.Min(chunk.Length, text.Length - 1);
+            carry = chunk[^keep..];
+        }
+        return false;
+    }
+
+    static bool HasUtf8Bom(string path)
+    {
+        Span<byte> b = stackalloc byte[3];
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return fs.Read(b) == 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF;
     }
 }

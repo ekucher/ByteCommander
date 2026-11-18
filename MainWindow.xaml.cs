@@ -13,15 +13,19 @@ using ByteCommander.Services;
 
 namespace ByteCommander;
 
-public sealed record AppCommand(string Title, string Gesture, string Glyph, Action Run);
-
 public partial class MainWindow : Window
 {
     readonly AppSettings settings;
     readonly List<AppCommand> commands = new();
+    readonly Dictionary<Hotkey, AppCommand> keymap = new();
     readonly DispatcherTimer toastTimer;
     FilePanel active;
     int historyIndex;
+
+    // Команди, на які посилаються меню й панель F-клавіш.
+    AppCommand cmdPalette = null!, cmdRename = null!, cmdView = null!, cmdEdit = null!, cmdCopy = null!, cmdMove = null!,
+        cmdMkDir = null!, cmdDelete = null!, cmdSearch = null!, cmdBookmarks = null!, cmdToggleBookmark = null!,
+        cmdNewFile = null!, cmdPaste = null!, cmdRefresh = null!, cmdTerminal = null!, cmdExplorer = null!, cmdFolderProps = null!;
 
     FilePanel Other => active == LeftPanel ? RightPanel : LeftPanel;
     IntPtr Hwnd => new WindowInteropHelper(this).Handle;
@@ -38,8 +42,9 @@ public partial class MainWindow : Window
         {
             p.Activated += (s, _) => SetActive((FilePanel)s!);
             p.PathChanged += (s, _) => { if (s == active) UpdatePrompt(); };
-            p.CommandRequested += OnPanelCommand;
-            p.FilesDropped += (_, files, dir, move) => { var _t = Transfer(files, dir.TrimEnd('\\') + "\\", move); };
+            p.BackgroundMenuRequested += ShowBackgroundMenu;
+            p.RenameRequested += panel => { SetActive(panel); Rename(); };
+            p.FilesDropped += (_, files, dir, move) => { var _t = Transfer(files, Util.AsDirTarget(dir), move); };
         }
 
         toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.2) };
@@ -61,17 +66,17 @@ public partial class MainWindow : Window
 
     void RestoreWindowBounds()
     {
-        if (settings.WinW is double w && settings.WinH is double h && settings.WinX is double x && settings.WinY is double y)
+        if (settings.Window is { } b)
         {
             var vs = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
                 SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
-            if (vs.IntersectsWith(new Rect(x, y, w, h)) && w > 400 && h > 300)
+            if (vs.IntersectsWith(new Rect(b.X, b.Y, b.Width, b.Height)) && b.Width > 400 && b.Height > 300)
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
-                Left = x;
-                Top = y;
-                Width = w;
-                Height = h;
+                Left = b.X;
+                Top = b.Y;
+                Width = b.Width;
+                Height = b.Height;
             }
         }
         else WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -89,7 +94,7 @@ public partial class MainWindow : Window
         if (args.Count > 0) LeftPanel.Navigate(args[0]);
         if (args.Count > 1) RightPanel.Navigate(args[1]);
 
-        var start = settings.ActiveSide == "Right" && args.Count == 0 ? RightPanel : LeftPanel;
+        var start = settings.RightPanelActive && args.Count == 0 ? RightPanel : LeftPanel;
         SetActive(start);
         start.FocusList();
     }
@@ -98,14 +103,11 @@ public partial class MainWindow : Window
     {
         settings.Left = LeftPanel.GetState();
         settings.Right = RightPanel.GetState();
-        settings.ActiveSide = active == RightPanel ? "Right" : "Left";
+        settings.RightPanelActive = active == RightPanel;
         settings.ShowHidden = FilePanel.ShowHidden;
         settings.Maximized = WindowState == WindowState.Maximized;
-        var b = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
-        settings.WinX = b.X;
-        settings.WinY = b.Y;
-        settings.WinW = b.Width;
-        settings.WinH = b.Height;
+        var r = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
+        settings.Window = new WindowBounds { X = r.X, Y = r.Y, Width = r.Width, Height = r.Height };
         if (settings.CommandHistory.Count > 100)
             settings.CommandHistory = settings.CommandHistory.Skip(settings.CommandHistory.Count - 100).ToList();
         settings.Save();
@@ -130,112 +132,141 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    // Команди
+    // Команди — єдиний реєстр: клавіші, палітра, F-панель і меню беруться звідси
     // =====================================================================
 
-    void Add(string title, string gesture, string glyph, Action run) => commands.Add(new AppCommand(title, gesture, glyph, run));
+    static Hotkey K(Key key, ModifierKeys mods = ModifierKeys.None) => Hotkey.Of(key, mods);
+    const ModifierKeys Ctrl = ModifierKeys.Control, Alt = ModifierKeys.Alt, Shift = ModifierKeys.Shift,
+        CtrlShift = ModifierKeys.Control | ModifierKeys.Shift, AltShift = ModifierKeys.Alt | ModifierKeys.Shift;
+
+    AppCommand Add(string title, string glyph, Action run, params Hotkey[] keys) => Add(title, glyph, run, null, keys);
+
+    AppCommand Add(string title, string glyph, Action run, string? panelKeys, params Hotkey[] keys)
+    {
+        var c = new AppCommand { Title = title, Glyph = glyph, Run = run, Keys = keys, PanelKeys = panelKeys };
+        commands.Add(c);
+        foreach (var k in keys)
+        {
+            if (!keymap.TryAdd(k, c))
+                throw new InvalidOperationException($"Комбінацію {k} призначено двічі: «{keymap[k].Title}» і «{title}».");
+        }
+        return c;
+    }
+
+    void InPanel(FilePanel p, Action<FilePanel> action)
+    {
+        SetActive(p);
+        p.FocusList();
+        action(p);
+    }
 
     void BuildCommands()
     {
-        Add("Перегляд файлу", "F3", "\uE890", View);
-        Add("Редагувати файл", "F4", "\uE70F", Edit);
-        Add("Новий файл", "Shift+F4", "\uE8A5", NewFile);
-        Add("Копіювати", "F5", "\uE8C8", () => CopyMove(false));
-        Add("Перемістити", "F6", "\uE8DE", () => CopyMove(true));
-        Add("Перейменувати", "F2 / Shift+F6", "\uE8AC", Rename);
-        Add("Новий каталог", "F7", "\uE8F4", MakeDir);
-        Add("Видалити в кошик", "F8 / Del", "\uE74D", () => Delete(false));
-        Add("Видалити назавжди", "Shift+Del", "\uE74D", () => Delete(true));
-        Add("Пошук файлів", "Alt+F7", "\uE721", ShowSearch);
-        Add("Запакувати в ZIP", "Alt+F5", "\uE7B8", Pack);
-        Add("Розпакувати ZIP", "Alt+F9", "\uE7B8", Unpack);
-        Add("Властивості", "Alt+Enter", "\uE946", Properties);
-        Add("Контекстне меню Провідника", "Shift+F10", "\uE712", () => active.ShowContextMenuForCurrent());
-        Add("Розмір каталогу під курсором", "Space", "\uEDA2", () => { if (active.CurrentItem is { } it) active.CalcSize(it); });
-        Add("Розмір усіх каталогів", "Alt+Shift+Enter", "\uEDA2", () => active.CalcAllSizes());
+        cmdView = Add("Перегляд файлу", "\uE890", View, K(Key.F3));
+        cmdEdit = Add("Редагувати файл", "\uE70F", Edit, K(Key.F4));
+        cmdNewFile = Add("Новий файл", "\uE8A5", NewFile, K(Key.F4, Shift));
+        cmdCopy = Add("Копіювати", "\uE8C8", () => CopyMove(false), K(Key.F5));
+        cmdMove = Add("Перемістити", "\uE8DE", () => CopyMove(true), K(Key.F6));
+        cmdRename = Add("Перейменувати", "\uE8AC", Rename, K(Key.F2), K(Key.F6, Shift));
+        cmdMkDir = Add("Новий каталог", "\uE8F4", MakeDir, K(Key.F7), K(Key.N, CtrlShift));
+        cmdDelete = Add("Видалити в кошик", "\uE74D", () => Delete(false), K(Key.F8), K(Key.Delete));
+        Add("Видалити назавжди", "\uE74D", () => Delete(true), K(Key.F8, Shift), K(Key.Delete, Shift));
+        cmdSearch = Add("Пошук файлів", "\uE721", ShowSearch, K(Key.F7, Alt));
+        Add("Запакувати в ZIP", "\uE7B8", Pack, K(Key.F5, Alt));
+        Add("Розпакувати ZIP", "\uE7B8", Unpack, K(Key.F9, Alt));
+        Add("Властивості", "\uE946", Properties, K(Key.Enter, Alt));
+        cmdFolderProps = Add("Властивості поточного каталогу", "\uE946", () => NativeMethods.ShowProperties(active.CurrentPath, Hwnd));
+        Add("Контекстне меню Провідника", "\uE712", () => active.ShowContextMenuForCurrent(), K(Key.F10, Shift), K(Key.Apps));
+        Add("Розмір каталогу під курсором", "\uEDA2", () => { if (active.CurrentItem is { } it) active.CalcSize(it); }, "Space");
+        Add("Розмір усіх каталогів", "\uEDA2", () => active.CalcAllSizes(), K(Key.Enter, AltShift));
+        Add("Відкрити", "\uE8E5", () => active.OpenCurrent(), "Enter");
 
-        Add("Нова вкладка", "Ctrl+T", "\uE710", () => { active.NewTab(); active.FocusList(); });
-        Add("Закрити вкладку", "Ctrl+W", "\uE711", () => { active.CloseTab(); active.FocusList(); });
-        Add("Наступна вкладка", "Ctrl+Tab", "\uE72A", () => { active.NextTab(1); active.FocusList(); });
-        Add("Попередня вкладка", "Ctrl+Shift+Tab", "\uE72B", () => { active.NextTab(-1); active.FocusList(); });
+        Add("Нова вкладка", "\uE710", () => { active.NewTab(); active.FocusList(); }, K(Key.T, Ctrl));
+        Add("Закрити вкладку", "\uE711", () => { active.CloseTab(); active.FocusList(); }, K(Key.W, Ctrl));
+        Add("Наступна вкладка", "\uE72A", () => { active.NextTab(1); active.FocusList(); }, K(Key.Tab, Ctrl));
+        Add("Попередня вкладка", "\uE72B", () => { active.NextTab(-1); active.FocusList(); }, K(Key.Tab, CtrlShift));
+        Add("Інша панель", "\uE8AB", SwitchPanel, K(Key.Tab));
 
-        Add("Назад", "Alt+←", "\uE72B", () => active.GoBack());
-        Add("Вперед", "Alt+→", "\uE72A", () => active.GoForward());
-        Add("Вгору", "Backspace", "\uE74A", () => active.GoUp());
-        Add("У корінь диска", "Ctrl+\\", "\uE80F", () => active.GoRoot());
-        Add("Вибір диска — ліва панель", "Alt+F1", "\uEDA2", () => { SetActive(LeftPanel); LeftPanel.FocusList(); LeftPanel.ShowDriveMenu(); });
-        Add("Вибір диска — права панель", "Alt+F2", "\uEDA2", () => { SetActive(RightPanel); RightPanel.FocusList(); RightPanel.ShowDriveMenu(); });
-        Add("Ввести шлях", "Ctrl+L", "\uE8AC", () => active.BeginEditPath());
-        Add("Закладки", "Ctrl+D", "\uE734", ShowBookmarks);
-        Add("Додати / прибрати закладку", "Ctrl+Shift+D", "\uE735", ToggleBookmark);
+        Add("Назад", "\uE72B", () => active.GoBack(), K(Key.Left, Alt));
+        Add("Вперед", "\uE72A", () => active.GoForward(), K(Key.Right, Alt));
+        Add("Вгору", "\uE74A", () => active.GoUp(), "Backspace", K(Key.Up, Alt), K(Key.PageUp, Ctrl));
+        Add("Увійти в каталог", "\uE76C", () => active.EnterCurrentDir(), K(Key.PageDown, Ctrl));
+        Add("У корінь диска", "\uE80F", () => active.GoRoot(), K(Key.Oem5, Ctrl));
+        Add("Вибір диска — ліва панель", "\uEDA2", () => InPanel(LeftPanel, p => p.ShowDriveMenu()), K(Key.F1, Alt));
+        Add("Вибір диска — права панель", "\uEDA2", () => InPanel(RightPanel, p => p.ShowDriveMenu()), K(Key.F2, Alt));
+        Add("Ввести шлях", "\uE8AC", () => active.BeginEditPath(), K(Key.L, Ctrl));
+        cmdBookmarks = Add("Закладки", "\uE734", ShowBookmarks, K(Key.D, Ctrl));
+        cmdToggleBookmark = Add("Додати / прибрати закладку", "\uE735", ToggleBookmark, K(Key.D, CtrlShift));
 
-        Add("Оновити панель", "Ctrl+R", "\uE72C", () => active.Refresh());
-        Add("Показати / сховати приховані файли", "Ctrl+H", "\uE7B3", ToggleHidden);
-        Add("Фільтр у панелі", "Ctrl+F", "\uE71C", () => active.ShowFilter());
-        Add("Поміняти панелі місцями", "Ctrl+U", "\uE8AB", SwapPanels);
-        Add("Той самий каталог в іншій панелі", "Ctrl+=", "\uE8A0", () => Other.Navigate(active.CurrentPath, active.CurrentItem?.Name));
-        Add("Сортувати за ім’ям", "Ctrl+F3", "\uE8CB", () => active.SetSort("Name"));
-        Add("Сортувати за типом", "Ctrl+F4", "\uE8CB", () => active.SetSort("Ext"));
-        Add("Сортувати за датою", "Ctrl+F5", "\uE8CB", () => active.SetSort("Date"));
-        Add("Сортувати за розміром", "Ctrl+F6", "\uE8CB", () => active.SetSort("Size"));
+        cmdRefresh = Add("Оновити панель", "\uE72C", () => active.Refresh(), K(Key.R, Ctrl));
+        Add("Показати / сховати приховані файли", "\uE7B3", ToggleHidden, K(Key.H, Ctrl));
+        Add("Фільтр у панелі", "\uE71C", () => active.ShowFilter(), K(Key.F, Ctrl));
+        Add("Поміняти панелі місцями", "\uE8AB", SwapPanels, K(Key.U, Ctrl));
+        Add("Той самий каталог в іншій панелі", "\uE8A0", () => Other.Navigate(active.CurrentPath, active.CurrentItem?.Name), K(Key.OemPlus, Ctrl));
+        Add("Сортувати за ім’ям", "\uE8CB", () => active.SetSort(SortKey.Name), K(Key.F3, Ctrl));
+        Add("Сортувати за типом", "\uE8CB", () => active.SetSort(SortKey.Ext), K(Key.F4, Ctrl));
+        Add("Сортувати за датою", "\uE8CB", () => active.SetSort(SortKey.Date), K(Key.F5, Ctrl));
+        Add("Сортувати за розміром", "\uE8CB", () => active.SetSort(SortKey.Size), K(Key.F6, Ctrl));
 
-        Add("Виділити все", "Ctrl+A", "\uE8B3", () => active.MarkAll(true));
-        Add("Зняти виділення", "Ctrl+Shift+A", "\uE8E6", () => active.MarkAll(false));
-        Add("Виділити за маскою", "Num +", "\uE710", () => MarkByMask(true));
-        Add("Зняти виділення за маскою", "Num −", "\uE738", () => MarkByMask(false));
-        Add("Інвертувати виділення", "Num *", "\uE8AB", () => active.InvertMarks());
+        Add("Позначити файл", "\uE73E", () => active.ToggleMarkCurrent(), "Insert / Space / Shift+↑↓ / Ctrl+клік");
+        Add("Виділити все", "\uE8B3", () => active.MarkAll(true), K(Key.A, Ctrl));
+        Add("Зняти виділення", "\uE8E6", () => active.MarkAll(false), K(Key.A, CtrlShift));
+        Add("Виділити за маскою", "\uE710", () => MarkByMask(true), K(Key.Add));
+        Add("Зняти виділення за маскою", "\uE738", () => MarkByMask(false), K(Key.Subtract));
+        Add("Інвертувати виділення", "\uE8AB", () => active.InvertMarks(), K(Key.Multiply));
 
-        Add("Копіювати в буфер обміну", "Ctrl+C", "\uE8C8", () => ClipboardCopy(false));
-        Add("Вирізати в буфер обміну", "Ctrl+X", "\uE8C6", () => ClipboardCopy(true));
-        Add("Вставити з буфера обміну", "Ctrl+V", "\uE77F", ClipboardPaste);
-        Add("Копіювати повний шлях", "Ctrl+Shift+C", "\uE71B", CopyPath);
+        Add("Копіювати в буфер обміну", "\uE8C8", () => ClipboardCopy(false), K(Key.C, Ctrl));
+        Add("Вирізати в буфер обміну", "\uE8C6", () => ClipboardCopy(true), K(Key.X, Ctrl));
+        cmdPaste = Add("Вставити з буфера обміну", "\uE77F", ClipboardPaste, K(Key.V, Ctrl));
+        Add("Копіювати повний шлях", "\uE71B", CopyPath, K(Key.C, CtrlShift));
 
-        Add("Командний рядок", "Ctrl+E", "\uE756", FocusCommandLine);
-        Add("Термінал у поточному каталозі", "Ctrl+`", "\uE756", OpenTerminal);
-        Add("Відкрити в Провіднику", "Ctrl+Shift+E", "\uEC50", OpenExplorer);
-        Add("Палітра команд", "Ctrl+Shift+P / F1", "\uE721", ShowPalette);
-        Add("Вихід", "Alt+X", "\uE7E8", Close);
+        Add("Командний рядок", "\uE756", FocusCommandLine, K(Key.E, Ctrl));
+        Add("Вставити ім’я файлу в командний рядок", "\uE756", PutNameToCommandLine, K(Key.Enter, Ctrl));
+        cmdTerminal = Add("Термінал у поточному каталозі", "\uE756", OpenTerminal, K(Key.Oem3, Ctrl));
+        cmdExplorer = Add("Відкрити в Провіднику", "\uEC50", OpenExplorer, K(Key.E, CtrlShift));
+        cmdPalette = Add("Палітра команд", "\uE721", ShowPalette, K(Key.F1), K(Key.P, CtrlShift), K(Key.P, Ctrl));
+        Add("Вихід", "\uE7E8", Close, K(Key.X, Alt));
     }
 
     void BuildFKeyBar()
     {
-        (string key, string label, Action run)[] keys =
+        (AppCommand cmd, string label)[] bar =
         {
-            ("F1", "Команди", ShowPalette),
-            ("F2", "Перейм.", Rename),
-            ("F3", "Перегляд", View),
-            ("F4", "Редагув.", Edit),
-            ("F5", "Копіювати", () => CopyMove(false)),
-            ("F6", "Перемістити", () => CopyMove(true)),
-            ("F7", "Каталог", MakeDir),
-            ("F8", "Видалити", () => Delete(false)),
-            ("Alt+F7", "Пошук", ShowSearch),
-            ("Ctrl+D", "Закладки", ShowBookmarks),
+            (cmdPalette, "Команди"), (cmdRename, "Перейм."), (cmdView, "Перегляд"), (cmdEdit, "Редагув."),
+            (cmdCopy, "Копіювати"), (cmdMove, "Перемістити"), (cmdMkDir, "Каталог"), (cmdDelete, "Видалити"),
+            (cmdSearch, "Пошук"), (cmdBookmarks, "Закладки"),
         };
-        foreach (var (key, label, run) in keys)
+        foreach (var (cmd, label) in bar)
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
-            sp.Children.Add(new TextBlock { Text = key, Foreground = Util.Res("AccentBrush"), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 0) });
+            sp.Children.Add(new TextBlock { Text = cmd.Keys[0].ToString(), Foreground = Util.Res("AccentBrush"), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 0) });
             sp.Children.Add(new TextBlock { Text = label, Foreground = Util.Res("TextDimBrush") });
-            var b = new Button { Content = sp, Style = (Style)FindResource("FKeyButton") };
-            b.Click += (_, _) => run();
+            var b = new Button { Content = sp, Style = (Style)FindResource("FKeyButton"), ToolTip = cmd.Title };
+            b.Click += (_, _) => cmd.Run();
             FKeyBar.Children.Add(b);
         }
     }
 
-    void OnPanelCommand(FilePanel panel, string cmd)
+    static MenuItem MenuItemFor(AppCommand c, bool enabled = true) => Util.MakeMenuItem(c.Glyph, c.Title, c.Gesture, c.Run, enabled);
+
+    /// <summary>Меню каталогу (правий клік на порожньому місці панелі).</summary>
+    void ShowBackgroundMenu(FilePanel panel)
     {
         SetActive(panel);
-        switch (cmd)
-        {
-            case "mkdir": MakeDir(); break;
-            case "newfile": NewFile(); break;
-            case "paste": ClipboardPaste(); break;
-            case "rename": Rename(); break;
-            case "terminal": OpenTerminal(); break;
-            case "explorer": OpenExplorer(); break;
-            case "folderprops": NativeMethods.ShowProperties(panel.CurrentPath, Hwnd); break;
-        }
+        bool canPaste;
+        try { canPaste = Clipboard.ContainsFileDropList(); } catch { canPaste = false; }
+        var m = new ContextMenu();
+        m.Items.Add(MenuItemFor(cmdMkDir));
+        m.Items.Add(MenuItemFor(cmdNewFile));
+        m.Items.Add(MenuItemFor(cmdPaste, canPaste));
+        m.Items.Add(new Separator());
+        m.Items.Add(MenuItemFor(cmdRefresh));
+        m.Items.Add(MenuItemFor(cmdTerminal));
+        m.Items.Add(MenuItemFor(cmdExplorer));
+        m.Items.Add(MenuItemFor(cmdFolderProps));
+        m.PlacementTarget = panel;
+        m.Placement = PlacementMode.MousePoint;
+        m.IsOpen = true;
     }
 
     // =====================================================================
@@ -245,116 +276,15 @@ public partial class MainWindow : Window
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
-        var m = Keyboard.Modifiers;
-        bool isF = key >= Key.F1 && key <= Key.F12;
-        bool inText = Keyboard.FocusedElement is TextBox;
-        if (inText && !isF && !(m == (ModifierKeys.Control | ModifierKeys.Shift) && key == Key.P)) return;
+        var hotkey = Hotkey.Of(key, Keyboard.Modifiers);
+        if (!keymap.TryGetValue(hotkey, out var cmd)) return;
+        // У полях вводу працюють лише F-клавіші та палітра команд; решта — редагування тексту.
+        if (Keyboard.FocusedElement is TextBox && !hotkey.IsFunctionKey && cmd != cmdPalette) return;
 
-        Action? a = null;
-        if (m == ModifierKeys.None)
-        {
-            a = key switch
-            {
-                Key.F1 => ShowPalette,
-                Key.F2 => Rename,
-                Key.F3 => View,
-                Key.F4 => Edit,
-                Key.F5 => () => CopyMove(false),
-                Key.F6 => () => CopyMove(true),
-                Key.F7 => MakeDir,
-                Key.F8 or Key.Delete => () => Delete(false),
-                Key.Tab => SwitchPanel,
-                Key.Apps => () => active.ShowContextMenuForCurrent(),
-                Key.Add => () => MarkByMask(true),
-                Key.Subtract => () => MarkByMask(false),
-                Key.Multiply => () => active.InvertMarks(),
-                _ => null,
-            };
-        }
-        else if (m == ModifierKeys.Shift)
-        {
-            a = key switch
-            {
-                Key.F4 => NewFile,
-                Key.F6 => Rename,
-                Key.F8 or Key.Delete => () => Delete(true),
-                Key.F10 => () => active.ShowContextMenuForCurrent(),
-                _ => null,
-            };
-        }
-        else if (m == ModifierKeys.Alt)
-        {
-            a = key switch
-            {
-                Key.F1 => () => { SetActive(LeftPanel); LeftPanel.FocusList(); LeftPanel.ShowDriveMenu(); },
-                Key.F2 => () => { SetActive(RightPanel); RightPanel.FocusList(); RightPanel.ShowDriveMenu(); },
-                Key.F5 => Pack,
-                Key.F7 => ShowSearch,
-                Key.F9 => Unpack,
-                Key.Enter => Properties,
-                Key.Left => () => active.GoBack(),
-                Key.Right => () => active.GoForward(),
-                Key.Up => () => active.GoUp(),
-                Key.X => Close,
-                _ => null,
-            };
-        }
-        else if (m == ModifierKeys.Control)
-        {
-            a = key switch
-            {
-                Key.T => () => { active.NewTab(); active.FocusList(); },
-                Key.W => () => { active.CloseTab(); active.FocusList(); },
-                Key.Tab => () => { active.NextTab(1); active.FocusList(); },
-                Key.R => () => active.Refresh(),
-                Key.H => ToggleHidden,
-                Key.F => () => active.ShowFilter(),
-                Key.L => () => active.BeginEditPath(),
-                Key.U => SwapPanels,
-                Key.D => ShowBookmarks,
-                Key.E => FocusCommandLine,
-                Key.A => () => active.MarkAll(true),
-                Key.C => () => ClipboardCopy(false),
-                Key.X => () => ClipboardCopy(true),
-                Key.V => ClipboardPaste,
-                Key.P => ShowPalette,
-                Key.Enter => PutNameToCommandLine,
-                Key.PageUp => () => active.GoUp(),
-                Key.PageDown => () => active.EnterCurrentDir(),
-                Key.OemPlus => () => Other.Navigate(active.CurrentPath, active.CurrentItem?.Name),
-                Key.Oem3 => OpenTerminal,
-                Key.Oem5 => () => active.GoRoot(),
-                Key.F3 => () => active.SetSort("Name"),
-                Key.F4 => () => active.SetSort("Ext"),
-                Key.F5 => () => active.SetSort("Date"),
-                Key.F6 => () => active.SetSort("Size"),
-                _ => null,
-            };
-        }
-        else if (m == (ModifierKeys.Control | ModifierKeys.Shift))
-        {
-            a = key switch
-            {
-                Key.Tab => () => { active.NextTab(-1); active.FocusList(); },
-                Key.P => ShowPalette,
-                Key.D => ToggleBookmark,
-                Key.A => () => active.MarkAll(false),
-                Key.C => CopyPath,
-                Key.E => OpenExplorer,
-                Key.N => MakeDir,
-                _ => null,
-            };
-        }
-        else if (m == (ModifierKeys.Alt | ModifierKeys.Shift))
-        {
-            if (key == Key.Enter) a = () => active.CalcAllSizes();
-        }
-
-        if (a == null) return;
         e.Handled = true;
         // Модальні діалоги відкриваємо після обробки поточного натискання,
         // щоб символ клавіші (наприклад «+») не потрапив у поле вводу діалогу.
-        Dispatcher.BeginInvoke(DispatcherPriority.Background, a);
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, cmd.Run);
     }
 
     void SwitchPanel()
@@ -560,18 +490,32 @@ public partial class MainWindow : Window
         var targets = active.GetTargets();
         if (targets.Count == 0) return;
         var verb = move ? "Перемістити" : "Копіювати";
-        var dest = Other.CurrentPath.TrimEnd('\\') + "\\";
-        var input = Dialogs.Input(this, verb, $"{verb} {Util.Describe(targets.Select(t => t.Name).ToList())} до:", dest);
-        if (string.IsNullOrWhiteSpace(input)) { active.FocusList(); return; }
-        input = Environment.ExpandEnvironmentVariables(input.Trim().Trim('"'));
-        string full;
-        try { full = Path.Combine(active.CurrentPath, input); }
-        catch (Exception ex) { Dialogs.Error(this, ex.Message); return; }
-        if (input.EndsWith('\\') || input.EndsWith('/')) full = full.TrimEnd('\\', '/') + "\\";
+        var input = Dialogs.Input(this, verb, $"{verb} {Util.Describe(targets.Select(t => t.Name).ToList())} до:", Util.AsDirTarget(Other.CurrentPath));
+        if (ResolveInputPath(input) is not { } full) { active.FocusList(); return; }
         _ = Transfer(targets.Select(t => t.FullPath).ToArray(), full, move);
     }
 
-    Task Transfer(string[] sources, string dest, bool move) =>
+    /// <summary>
+    /// Шлях, введений у діалозі, відносно активної панелі: розкриває %ЗМІННІ%, знімає лапки,
+    /// зберігає кінцевий «\» (ознака каталогу). null — скасовано, порожньо або некоректний шлях.
+    /// </summary>
+    string? ResolveInputPath(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var text = Environment.ExpandEnvironmentVariables(input.Trim().Trim('"'));
+        try
+        {
+            var full = Path.Combine(active.CurrentPath, text);
+            return text.EndsWith('\\') || text.EndsWith('/') ? Util.AsDirTarget(full) : full;
+        }
+        catch (Exception ex)
+        {
+            Dialogs.Error(this, ex.Message);
+            return null;
+        }
+    }
+
+    Task<bool> Transfer(string[] sources, string dest, bool move) =>
         RunOperation(move ? "Переміщення" : "Копіювання", (op, ct) => op.Transfer(sources, dest, move, ct));
 
     async void Delete(bool permanent)
@@ -600,7 +544,8 @@ public partial class MainWindow : Window
         panel.FocusList();
     }
 
-    async Task RunOperation(string title, Action<FileOperation, CancellationToken> work)
+    /// <returns>true — операцію завершено повністю: без скасування, без фатальної помилки й без помилок по файлах.</returns>
+    async Task<bool> RunOperation(string title, Action<FileOperation, CancellationToken> work)
     {
         var state = new ProgressState();
         using var cts = new CancellationTokenSource();
@@ -640,6 +585,7 @@ public partial class MainWindow : Window
         LeftPanel.Refresh();
         RightPanel.Refresh();
         active.FocusList();
+        return fatal == null && op.Errors.Count == 0 && !cts.IsCancellationRequested;
     }
 
     ConflictChoice AskConflict(string src, string dst) => Dispatcher.Invoke(() =>
@@ -683,8 +629,7 @@ public partial class MainWindow : Window
         if (baseName.Length == 0) baseName = "архів";
         var dest = Dialogs.Input(this, "Пакування", $"Запакувати {Util.Describe(targets.Select(t => t.Name).ToList())} в архів:",
             Path.Combine(Other.CurrentPath, baseName + ".zip"), selectStem: true);
-        if (string.IsNullOrWhiteSpace(dest)) { active.FocusList(); return; }
-        var full = Path.Combine(active.CurrentPath, dest.Trim().Trim('"'));
+        if (ResolveInputPath(dest) is not { } full) { active.FocusList(); return; }
         if (!full.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) full += ".zip";
         var paths = targets.Select(t => t.FullPath).ToList();
         _ = RunOperation("Пакування", (op, ct) => op.Pack(paths, full, ct));
@@ -699,12 +644,11 @@ public partial class MainWindow : Window
             ShowToast("Виберіть ZIP-архів(и) для розпакування");
             return;
         }
-        var suggested = zips.Count == 1
-            ? Path.Combine(Other.CurrentPath, Path.GetFileNameWithoutExtension(zips[0])) + "\\"
-            : Other.CurrentPath.TrimEnd('\\') + "\\";
+        var suggested = Util.AsDirTarget(zips.Count == 1
+            ? Path.Combine(Other.CurrentPath, Path.GetFileNameWithoutExtension(zips[0]))
+            : Other.CurrentPath);
         var dest = Dialogs.Input(this, "Розпакування", $"Розпакувати {Util.Describe(zips.Select(Path.GetFileName).ToList()!)} до:", suggested);
-        if (string.IsNullOrWhiteSpace(dest)) { active.FocusList(); return; }
-        var full = Path.Combine(active.CurrentPath, dest.Trim().Trim('"'));
+        if (ResolveInputPath(dest) is not { } full) { active.FocusList(); return; }
         _ = RunOperation("Розпакування", (op, ct) => op.Unpack(zips, full, ct));
     }
 
@@ -771,8 +715,9 @@ public partial class MainWindow : Window
 
     async Task PasteAsync(string[] files, bool move)
     {
-        await Transfer(files, active.CurrentPath.TrimEnd('\\') + "\\", move);
-        if (move)
+        bool completed = await Transfer(files, Util.AsDirTarget(active.CurrentPath), move);
+        // «Вирізати» знімаємо з буфера лише після повного успіху — інакше користувач може повторити вставку.
+        if (move && completed)
         {
             try { Clipboard.Clear(); } catch { }
         }
@@ -894,7 +839,7 @@ public partial class MainWindow : Window
         if (settings.Bookmarks.Count > 0) m.Items.Add(new Separator());
         bool has = settings.Bookmarks.Contains(active.CurrentPath, StringComparer.OrdinalIgnoreCase);
         m.Items.Add(Util.MakeMenuItem(has ? "\uE735" : "\uE734",
-            has ? "Прибрати поточний каталог із закладок" : "Додати поточний каталог до закладок", "Ctrl+Shift+D", ToggleBookmark));
+            has ? "Прибрати поточний каталог із закладок" : "Додати поточний каталог до закладок", cmdToggleBookmark.Gesture, ToggleBookmark));
         m.PlacementTarget = active;
         m.Placement = PlacementMode.Relative;
         m.HorizontalOffset = 60;

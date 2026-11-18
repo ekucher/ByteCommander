@@ -22,16 +22,19 @@ public partial class FilePanel : UserControl
 
     public event EventHandler? Activated;
     public event EventHandler? PathChanged;
-    /// <summary>Запит до головного вікна виконати команду ("mkdir", "newfile", "paste", "rename", ...).</summary>
-    public event Action<FilePanel, string>? CommandRequested;
+    /// <summary>Правий клік на порожньому місці / «..» — меню каталогу будує головне вікно зі своїх команд.</summary>
+    public event Action<FilePanel>? BackgroundMenuRequested;
+    /// <summary>У контекстному меню Провідника вибрано «Перейменувати».</summary>
+    public event Action<FilePanel>? RenameRequested;
     /// <summary>(панель, файли, каталог призначення, переміщення?)</summary>
     public event Action<FilePanel, string[], string, bool>? FilesDropped;
 
     List<FileItem> allItems = new();
     ObservableCollection<FileItem> items = new();
     string displayedPath = "";
-    string sortBy = "Name";
+    SortKey sortBy = SortKey.Name;
     bool sortDesc;
+    readonly Dictionary<SortKey, (GridViewColumn column, string title)> sortColumns;
     string filter = "";
     bool suppressFilter;
     FileSystemWatcher? watcher;
@@ -47,6 +50,13 @@ public partial class FilePanel : UserControl
     {
         InitializeComponent();
         TabsList.ItemsSource = Tabs;
+        sortColumns = new()
+        {
+            [SortKey.Name] = (ColName, "Ім’я"),
+            [SortKey.Ext] = (ColExt, "Тип"),
+            [SortKey.Size] = (ColSize, "Розмір"),
+            [SortKey.Date] = (ColDate, "Змінено"),
+        };
         refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
         refreshTimer.Tick += (_, _) =>
         {
@@ -79,7 +89,7 @@ public partial class FilePanel : UserControl
 
     public void Init(PanelState state, string fallback)
     {
-        sortBy = state.SortBy is "Name" or "Ext" or "Size" or "Date" ? state.SortBy : "Name";
+        sortBy = Enum.IsDefined(state.SortBy) ? state.SortBy : SortKey.Name;
         sortDesc = state.SortDesc;
         foreach (var p in state.Tabs)
             if (!string.IsNullOrWhiteSpace(p) && Directory.Exists(p))
@@ -203,9 +213,9 @@ public partial class FilePanel : UserControl
         if (a.IsDirectory != b.IsDirectory) return a.IsDirectory ? -1 : 1;
         int r = sortBy switch
         {
-            "Ext" => string.Compare(a.Extension, b.Extension, StringComparison.OrdinalIgnoreCase),
-            "Size" => a.EffectiveSize.CompareTo(b.EffectiveSize),
-            "Date" => a.Modified.CompareTo(b.Modified),
+            SortKey.Ext => string.Compare(a.Extension, b.Extension, StringComparison.OrdinalIgnoreCase),
+            SortKey.Size => a.EffectiveSize.CompareTo(b.EffectiveSize),
+            SortKey.Date => a.Modified.CompareTo(b.Modified),
             _ => 0,
         };
         if (r == 0) r = NativeMethods.StrCmpLogicalW(a.Name, b.Name);
@@ -218,7 +228,7 @@ public partial class FilePanel : UserControl
         var curName = CurrentItem?.Name;
         int curIdx = Math.Max(List.SelectedIndex, 0);
         var marked = items.Where(i => i.IsMarked).Select(i => i.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var sizes = allItems.Where(i => i.IsDirectory && i.DirSize >= 0)
+        var sizes = allItems.Where(i => i.IsDirectory && i.DirSize is not null)
                             .GroupBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
                             .ToDictionary(g => g.Key, g => g.First().DirSize, StringComparer.OrdinalIgnoreCase);
         bool focus = List.IsKeyboardFocusWithin;
@@ -482,12 +492,12 @@ public partial class FilePanel : UserControl
 
     public void CalcSize(FileItem it)
     {
-        if (!it.IsDirectory || it.IsParent || it.DirSize == -2) return;
-        it.DirSize = -2;
+        if (!it.IsDirectory || it.IsParent || it.IsSizeCalculating) return;
+        it.IsSizeCalculating = true;
         var path = it.FullPath;
         Task.Run(() => Util.DirectorySize(path)).ContinueWith(t =>
         {
-            it.DirSize = t.IsCompletedSuccessfully ? t.Result : -1;
+            it.DirSize = t.IsCompletedSuccessfully ? t.Result : null;
             UpdateStatus();
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -497,13 +507,20 @@ public partial class FilePanel : UserControl
         foreach (var i in items) if (i.IsDirectory && !i.IsParent) CalcSize(i);
     }
 
-    public void SetSort(string key)
+    /// <summary>Позначити / зняти позначку з елемента під курсором і перейти до наступного (як Insert).</summary>
+    public void ToggleMarkCurrent()
+    {
+        ToggleMark(CurrentItem);
+        MoveCursor(1);
+    }
+
+    public void SetSort(SortKey key)
     {
         if (sortBy == key) sortDesc = !sortDesc;
         else
         {
             sortBy = key;
-            sortDesc = key is "Size" or "Date";
+            sortDesc = key is SortKey.Size or SortKey.Date;
         }
         UpdateHeaders();
         Apply(CurrentItem?.Name, List.IsKeyboardFocusWithin);
@@ -511,18 +528,21 @@ public partial class FilePanel : UserControl
 
     void UpdateHeaders()
     {
-        string Arrow(string k) => sortBy == k ? (sortDesc ? "  ↓" : "  ↑") : "";
-        ColName.Header = "Ім’я" + Arrow("Name");
-        ColExt.Header = "Тип" + Arrow("Ext");
-        ColSize.Header = "Розмір" + Arrow("Size");
-        ColDate.Header = "Змінено" + Arrow("Date");
+        foreach (var (key, (column, title)) in sortColumns)
+            column.Header = title + (key == sortBy ? (sortDesc ? "  ↓" : "  ↑") : "");
     }
 
     void Header_Click(object sender, RoutedEventArgs e)
     {
         if (e.OriginalSource is not GridViewColumnHeader h || h.Column == null) return;
-        string? key = h.Column == ColName ? "Name" : h.Column == ColExt ? "Ext" : h.Column == ColSize ? "Size" : h.Column == ColDate ? "Date" : null;
-        if (key != null) SetSort(key);
+        foreach (var (key, (column, _)) in sortColumns)
+        {
+            if (column == h.Column)
+            {
+                SetSort(key);
+                return;
+            }
+        }
     }
 
     // =====================================================================
@@ -819,8 +839,15 @@ public partial class FilePanel : UserControl
                 break;
             case Key.Space when m == ModifierKeys.None:
                 e.Handled = true;
-                if (quick.Length > 0 || CurrentItem is not { } it) break;
-                if (it.IsDirectory && !it.IsParent && it.DirSize == -1 && !it.IsMarked) CalcSize(it);
+                if (quick.Length > 0)
+                {
+                    // під час швидкого пошуку пробіл — частина імені
+                    quick += " ";
+                    DoQuickSearch();
+                    break;
+                }
+                if (CurrentItem is not { } it) break;
+                if (it.IsDirectory && !it.IsParent && it.DirSize is null && !it.IsSizeCalculating && !it.IsMarked) CalcSize(it);
                 ToggleMark(it);
                 MoveCursor(1);
                 break;
@@ -851,9 +878,11 @@ public partial class FilePanel : UserControl
     {
         if ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0) return;
         var t = e.Text;
+        // пробіл обробляється в List_PreviewKeyDown
         if (string.IsNullOrEmpty(t) || char.IsControl(t[0]) || t == " ") return;
-        // + - * з цифрового блоку — команди виділення, не пошук
-        if (quick.Length == 0 && t is "+" or "-" or "*") return;
+        // + − * з цифрового блоку — команди виділення (їх уже виконало головне вікно), а не символи пошуку.
+        // Ті самі символи з основної клавіатури, напр. «-», шукаються як звичайно.
+        if (Keyboard.IsKeyDown(Key.Add) || Keyboard.IsKeyDown(Key.Subtract) || Keyboard.IsKeyDown(Key.Multiply)) return;
         quick += t;
         DoQuickSearch();
         e.Handled = true;
@@ -977,29 +1006,10 @@ public partial class FilePanel : UserControl
     {
         if (Owner is not { } w) return;
         var verb = ShellContextMenu.Show(w, targets.Select(t => t.FullPath).ToList(), screenPt);
-        if (verb == "rename") CommandRequested?.Invoke(this, "rename");
+        if (verb == "rename") RenameRequested?.Invoke(this);
     }
 
-    void ShowBackgroundMenu()
-    {
-        var m = new ContextMenu();
-        void Cmd(string glyph, string title, string gesture, string cmd, bool enabled = true) =>
-            m.Items.Add(Util.MakeMenuItem(glyph, title, gesture, () => CommandRequested?.Invoke(this, cmd), enabled));
-
-        Cmd("", "Новий каталог", "F7", "mkdir");
-        Cmd("", "Новий файл", "Shift+F4", "newfile");
-        bool canPaste;
-        try { canPaste = Clipboard.ContainsFileDropList(); } catch { canPaste = false; }
-        Cmd("", "Вставити", "Ctrl+V", "paste", canPaste);
-        m.Items.Add(new Separator());
-        m.Items.Add(Util.MakeMenuItem("", "Оновити", "Ctrl+R", Refresh));
-        Cmd("", "Термінал тут", "Ctrl+`", "terminal");
-        Cmd("", "Відкрити в Провіднику", "Ctrl+Shift+E", "explorer");
-        Cmd("", "Властивості каталогу", "", "folderprops");
-        m.PlacementTarget = List;
-        m.Placement = PlacementMode.MousePoint;
-        m.IsOpen = true;
-    }
+    void ShowBackgroundMenu() => BackgroundMenuRequested?.Invoke(this);
 
     string? DropTargetDir(DragEventArgs e)
     {

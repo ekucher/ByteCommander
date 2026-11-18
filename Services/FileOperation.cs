@@ -98,7 +98,7 @@ public sealed class FileOperation
                     st.DoneFiles++;
                     continue;
                 }
-                catch (IOException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     Count(p.src, ct); // не вдалося перейменувати — переходимо на копіювання+видалення
                 }
@@ -119,10 +119,8 @@ public sealed class FileOperation
                 st.TotalBytes += new FileInfo(path).Length;
                 return;
             }
-            var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0, MaxRecursionDepth = 64 };
-            foreach (var f in new DirectoryInfo(path).EnumerateFiles("*", opts))
+            foreach (var f in Util.ScanFiles(path, ct))
             {
-                ct.ThrowIfCancellationRequested();
                 st.TotalFiles++;
                 st.TotalBytes += f.Length;
             }
@@ -201,15 +199,7 @@ public sealed class FileOperation
             SkipProgress(len);
             return false;
         }
-        if (File.Exists(dst))
-        {
-            switch (Resolve(src, dst))
-            {
-                case ConflictChoice.Skip: SkipProgress(len); return false;
-                case ConflictChoice.Cancel: throw new OperationCanceledException();
-                case ConflictChoice.Rename: dst = UniqueName(dst); break;
-            }
-        }
+        if (!ClaimTarget(src, ref dst, len)) return false;
 
         long before = st.DoneBytes;
         try
@@ -294,9 +284,9 @@ public sealed class FileOperation
             {
                 try
                 {
-                    var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0, MaxRecursionDepth = 64 };
-                    st.TotalFiles += new DirectoryInfo(p).EnumerateFiles("*", opts).Count();
+                    st.TotalFiles += Util.ScanFiles(p, ct).Count();
                 }
+                catch (OperationCanceledException) { throw; }
                 catch { }
             }
         }
@@ -355,7 +345,7 @@ public sealed class FileOperation
     {
         st.Phase = "Підрахунок…";
         var entries = new List<(string full, string rel, bool dir)>();
-        var all = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0, MaxRecursionDepth = 64 };
+        var all = Util.DeepScan;
         foreach (var raw in sources)
         {
             var s = Path.GetFullPath(raw).TrimEnd('\\');
@@ -381,21 +371,13 @@ public sealed class FileOperation
             }
         }
 
-        if (File.Exists(zipPath))
-        {
-            switch (Resolve("", zipPath))
-            {
-                case ConflictChoice.Skip: return;
-                case ConflictChoice.Cancel: throw new OperationCanceledException();
-                case ConflictChoice.Rename: zipPath = UniqueName(zipPath); break;
-            }
-        }
+        if (!ClaimTarget("", ref zipPath, 0)) return;
 
         st.Phase = "Пакування";
-        bool success = false;
-        try
+        // Архів пишеться у тимчасовий файл: при збої/скасуванні наявний архів з тим самим ім’ям не втрачається.
+        WriteViaTemp(zipPath, tmp =>
         {
-            using (var fs = new FileStream(zipPath, FileMode.Create))
+            using (var fs = new FileStream(tmp, FileMode.CreateNew))
             using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
             {
                 foreach (var e in entries)
@@ -424,12 +406,7 @@ public sealed class FileOperation
                     st.DoneFiles++;
                 }
             }
-            success = true;
-        }
-        finally
-        {
-            if (!success) TryDelete(zipPath);
-        }
+        });
     }
 
     public void Unpack(IReadOnlyList<string> zips, string destDir, CancellationToken ct)
@@ -482,13 +459,7 @@ public sealed class FileOperation
                             continue;
                         }
                         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                        if (File.Exists(target))
-                        {
-                            var c = Resolve(z + " → " + e.FullName, target);
-                            if (c == ConflictChoice.Cancel) throw new OperationCanceledException();
-                            if (c == ConflictChoice.Skip) { SkipProgress(e.Length); continue; }
-                            if (c == ConflictChoice.Rename) target = UniqueName(target);
-                        }
+                        if (!ClaimTarget(z + " → " + e.FullName, ref target, e.Length)) continue;
                         WriteViaTemp(target, tmp =>
                         {
                             using (var input = e.Open())
@@ -529,6 +500,29 @@ public sealed class FileOperation
                 return ConflictChoice.Skip;
             default:
                 return c;
+        }
+    }
+
+    /// <summary>
+    /// Якщо <paramref name="dst"/> вже існує — питає користувача, що робити.
+    /// Повертає false, якщо об’єкт пропущено (прогрес враховано); при «Перейменувати» змінює <paramref name="dst"/>;
+    /// при «Скасувати» кидає <see cref="OperationCanceledException"/>. При «Замінити» нічого не чіпає — заміну робить запис.
+    /// </summary>
+    bool ClaimTarget(string src, ref string dst, long skipBytes)
+    {
+        if (!File.Exists(dst)) return true;
+        switch (Resolve(src, dst))
+        {
+            case ConflictChoice.Skip:
+                SkipProgress(skipBytes);
+                return false;
+            case ConflictChoice.Cancel:
+                throw new OperationCanceledException();
+            case ConflictChoice.Rename:
+                dst = UniqueName(dst);
+                return true;
+            default:
+                return true;
         }
     }
 

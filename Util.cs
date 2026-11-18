@@ -77,20 +77,26 @@ public static class Util
         return false;
     }
 
-    public static long DirectorySize(string path, CancellationToken ct = default)
+    /// <summary>Рекурсивний обхід: з прихованими/системними, без падіння на недоступних, з обмеженням глибини.</summary>
+    public static readonly EnumerationOptions DeepScan = new()
     {
-        long total = 0;
-        var opts = new EnumerationOptions
-        {
-            RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0, MaxRecursionDepth = 64,
-        };
-        foreach (var f in new DirectoryInfo(path).EnumerateFiles("*", opts))
+        RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0, MaxRecursionDepth = 64,
+    };
+
+    /// <summary>Усі файли каталогу рекурсивно (з перевіркою скасування між файлами).</summary>
+    public static IEnumerable<FileInfo> ScanFiles(string dir, CancellationToken ct = default)
+    {
+        foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*", DeepScan))
         {
             ct.ThrowIfCancellationRequested();
-            total += f.Length;
+            yield return f;
         }
-        return total;
     }
+
+    public static long DirectorySize(string path, CancellationToken ct = default) => ScanFiles(path, ct).Sum(f => f.Length);
+
+    /// <summary>"C:\a" → "C:\a\": шлях, який операції сприймають як каталог призначення.</summary>
+    public static string AsDirTarget(string path) => path.TrimEnd('\\', '/') + "\\";
 
     public static void ShellOpen(string path, string? workDir = null)
     {

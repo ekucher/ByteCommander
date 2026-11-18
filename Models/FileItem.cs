@@ -16,7 +16,8 @@ public sealed class FileItem : INotifyPropertyChanged
     public ImageSource? Icon { get; init; }
 
     bool isMarked;
-    long dirSize = -1; // -1 — невідомо, -2 — рахується
+    long? dirSize;
+    bool isSizeCalculating;
 
     public bool IsMarked
     {
@@ -24,10 +25,28 @@ public sealed class FileItem : INotifyPropertyChanged
         set { if (isMarked != value) { isMarked = value; Raise(); } }
     }
 
-    public long DirSize
+    /// <summary>Порахований розмір каталогу; null — ще не рахували. Встановлення завершує підрахунок.</summary>
+    public long? DirSize
     {
         get => dirSize;
-        set { dirSize = value; Raise(); Raise(nameof(SizeText)); }
+        set
+        {
+            dirSize = value;
+            isSizeCalculating = false;
+            Raise();
+            Raise(nameof(SizeText));
+        }
+    }
+
+    public bool IsSizeCalculating
+    {
+        get => isSizeCalculating;
+        set
+        {
+            isSizeCalculating = value;
+            Raise();
+            Raise(nameof(SizeText));
+        }
     }
 
     public bool IsHidden => !IsParent && (Attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0;
@@ -35,7 +54,7 @@ public sealed class FileItem : INotifyPropertyChanged
     public string Extension => IsDirectory ? "" : Path.GetExtension(Name).TrimStart('.').ToLowerInvariant();
 
     public string SizeText => IsParent ? "" :
-        IsDirectory ? dirSize switch { -2 => "…", < 0 => "<DIR>", _ => Util.FormatSize(dirSize) } :
+        IsDirectory ? (isSizeCalculating ? "…" : dirSize is long s ? Util.FormatSize(s) : "<DIR>") :
         Util.FormatSize(Size);
 
     public string DateText => IsParent ? "" : Modified.ToString("dd.MM.yyyy HH:mm");
@@ -54,7 +73,7 @@ public sealed class FileItem : INotifyPropertyChanged
         }
     }
 
-    public long EffectiveSize => IsDirectory ? Math.Max(dirSize, 0) : Size;
+    public long EffectiveSize => IsDirectory ? dirSize ?? 0 : Size;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void Raise([CallerMemberName] string? p = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
