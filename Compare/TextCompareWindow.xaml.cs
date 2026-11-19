@@ -375,12 +375,8 @@ public partial class TextCompareWindow : Window
     // Клавіші й кнопки
     // =====================================================================
 
-    void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    void Window_PreviewKeyDown(object sender, KeyEventArgs e) => HotkeyDispatch.Handle(e, hk => (hk.Key, hk.Modifiers) switch
     {
-        var key = e.Key == Key.System ? e.SystemKey : e.Key;
-        var m = Keyboard.Modifiers;
-        Action? a = (key, m) switch
-        {
             (Key.F8, ModifierKeys.None) or (Key.N, ModifierKeys.Control) or (Key.Down, ModifierKeys.Alt) => () => Step(1),
             (Key.F8, ModifierKeys.Shift) or (Key.P, ModifierKeys.Control) or (Key.Up, ModifierKeys.Alt) => () => Step(-1),
             (Key.Right, ModifierKeys.Alt) => () => _ = CopyBlockAsync(toRight: true),
@@ -388,12 +384,8 @@ public partial class TextCompareWindow : Window
             (Key.S, ModifierKeys.Control) => () => SaveAll(),
             (Key.F5, ModifierKeys.None) => () => Reload_Click(this, new RoutedEventArgs()),
             (Key.Escape, ModifierKeys.None) => Close,
-            _ => null,
-        };
-        if (a == null) return;
-        e.Handled = true;
-        a();
-    }
+            _ => (Action?)null,
+    });
 
     void Next_Click(object sender, RoutedEventArgs e) => Step(1);
     void Prev_Click(object sender, RoutedEventArgs e) => Step(-1);

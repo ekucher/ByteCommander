@@ -281,11 +281,9 @@ public partial class FolderCompareWindow : Window
 
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        var key = e.Key == Key.System ? e.SystemKey : e.Key;
-        var m = Keyboard.Modifiers;
         bool inText = Keyboard.FocusedElement is TextBox;
         var row = List.SelectedItem as FolderRow;
-        Action? a = (key, m) switch
+        HotkeyDispatch.Handle(e, hk => (hk.Key, hk.Modifiers) switch
         {
             (Key.F5, ModifierKeys.None) => () => _ = CompareAsync(),
             (Key.Right, ModifierKeys.Alt) => () => _ = CopyAsync(toRight: true),
@@ -294,11 +292,8 @@ public partial class FolderCompareWindow : Window
             (Key.Enter, ModifierKeys.None) when !inText && row != null => () => OpenRow(row),
             (Key.Right, ModifierKeys.None) when !inText && row is { Entry.IsDirectory: true, Expanded: false } => () => Toggle(row, true),
             (Key.Left, ModifierKeys.None) when !inText && row is { Entry.IsDirectory: true, Expanded: true } => () => Toggle(row, false),
-            _ => null,
-        };
-        if (a == null) return;
-        e.Handled = true;
-        a();
+            _ => (Action?)null,
+        });
     }
 
     void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e) => scanCts?.Cancel();

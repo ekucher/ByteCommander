@@ -41,6 +41,21 @@ public readonly record struct Hotkey(ModifierKeys Modifiers, Key Key)
 }
 
 /// <summary>
+/// Обробка натискання у вікнах зі своїми гарячими клавішами (порівняння тощо): визначає комбінацію
+/// (Alt-комбінації WPF віддає як Key.System), питає у вікна дію й виконує її.
+/// </summary>
+public static class HotkeyDispatch
+{
+    public static void Handle(KeyEventArgs e, Func<Hotkey, Action?> resolve)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (resolve(Hotkey.Of(key, Keyboard.Modifiers)) is not { } action) return;
+        e.Handled = true;
+        action();
+    }
+}
+
+/// <summary>
 /// Команда застосунку — єдине джерело правди: з неї будуються обробник клавіш,
 /// панель F-клавіш, контекстні меню, палітра команд.
 /// </summary>
