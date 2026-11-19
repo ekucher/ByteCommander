@@ -77,8 +77,9 @@ public sealed class TextDiffTests
         var r = TextDiff.Compare(L("int x = 10;"), L("int x = 25;"), new DiffOptions());
         var row = Assert.Single(r.Rows);
         Assert.Equal(DiffKind.Changed, row.Kind);
-        Assert.Equal("10", row.LeftText.Substring(row.HighlightStartLeft, row.HighlightLengthLeft));
-        Assert.Equal("25", row.RightText.Substring(row.HighlightStartRight, row.HighlightLengthRight));
+        Assert.Equal("10", row.LeftText.Substring(row.HighlightLeft.Start, row.HighlightLeft.Length));
+        Assert.Equal("25", row.RightText.Substring(row.HighlightRight.Start, row.HighlightRight.Length));
+        Assert.Equal(new TextSpan(8, 2), row.HighlightLeft);
     }
 
     [Theory]
