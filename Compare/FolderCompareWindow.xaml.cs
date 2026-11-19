@@ -23,22 +23,24 @@ public sealed class FolderRow
     public string LeftDate => Date(Entry.Left);
     public string RightDate => Date(Entry.Right);
 
-    public string StatusMark => Entry.Status switch
-    {
-        EntryStatus.Same => "=",
-        EntryStatus.LeftOnly => "◀",
-        EntryStatus.RightOnly => "▶",
-        _ => Entry.LeftNewer ? "≠ ◀" : Entry.RightNewer ? "≠ ▶" : "≠",
-    };
+    public bool IsLink => Entry.IsLink;
 
-    public string StatusText => (Entry.Status switch
+    public string StatusMark => Entry.Status == EntryStatus.Different
+        ? (Entry.LeftNewer ? "≠ ◀" : Entry.RightNewer ? "≠ ▶" : "≠")
+        : EntryStatusInfo.Of(Entry.Status).Mark;
+
+    public string StatusText
     {
-        EntryStatus.Same => "Однакові",
-        EntryStatus.LeftOnly => "Лише зліва",
-        EntryStatus.RightOnly => "Лише справа",
-        _ when Entry.IsDirectory => "Є відмінності всередині",
-        _ => "Різні" + (Entry.LeftNewer ? " — лівий новіший" : Entry.RightNewer ? " — правий новіший" : ""),
-    }) + (Entry.Error != null ? $" ({Entry.Error})" : "");
+        get
+        {
+            var info = EntryStatusInfo.Of(Entry.Status);
+            string text = Entry.IsLink && Entry.Status == EntryStatus.NotCompared ? EntryStatusInfo.LinkText
+                : Entry.IsDirectory ? info.DirectoryText : info.Text;
+            if (Entry.Status == EntryStatus.Different && !Entry.IsDirectory)
+                text += Entry.LeftNewer ? " — лівий новіший" : Entry.RightNewer ? " — правий новіший" : "";
+            return text + (Entry.Error != null ? $" ({Entry.Error})" : "");
+        }
+    }
 
     static string Size(FileSystemInfo? f) => f switch
     {
@@ -64,11 +66,19 @@ public partial class FolderCompareWindow : Window
     public FolderCompareWindow(string left, string right)
     {
         InitializeComponent();
+        Util.ApplyWindowTheme(this);
         LeftPath.Text = left;
         RightPath.Text = right;
-        LeftPath.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; _ = CompareAsync(); } };
-        RightPath.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; _ = CompareAsync(); } };
+        LeftPath.KeyDown += PathBox_KeyDown;
+        RightPath.KeyDown += PathBox_KeyDown;
         Loaded += async (_, _) => await CompareAsync();
+    }
+
+    void PathBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        _ = CompareAsync();
     }
 
     string LeftRoot => Util.NormalizeDir(LeftPath.Text);
@@ -129,10 +139,10 @@ public partial class FolderCompareWindow : Window
     void UpdateStatus()
     {
         if (root == null) return;
-        var (s, d, lo, ro) = FolderComparer.Count(root);
+        var (s, d, lo, ro, nc) = FolderComparer.Count(root);
         StatusText.Text = root.Status == EntryStatus.Same
             ? $"Каталоги однакові  ·  {Util.Count(s, "файл", "файли", "файлів")}"
-            : $"однакових {s}  ·  різних {d}  ·  лише зліва {lo}  ·  лише справа {ro}" +
+            : $"однакових {s}  ·  різних {d}  ·  лише зліва {lo}  ·  лише справа {ro}" + (nc > 0 ? $"  ·  не порівнювано (посилань) {nc}" : "") +
               (ByContentBox.IsChecked == true ? "  ·  порівняно за вмістом" : "  ·  порівняно за розміром і датою");
     }
 
@@ -218,8 +228,15 @@ public partial class FolderCompareWindow : Window
         else StatusText.Text = "Файл є лише з одного боку — порівнювати нема з чим.";
     }
 
-    void List_SizeChanged(object sender, SizeChangedEventArgs e) =>
-        ColName.Width = Math.Max(240, List.ActualWidth - 90 - 130 - 54 - 90 - 130 - 30);
+    /// <summary>Запас під вертикальну смугу прокрутки й відступи рамки.</summary>
+    const double ListChrome = 30;
+    const double MinNameWidth = 240;
+
+    void List_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        double others = ((GridView)List.View).Columns.Where(c => c != ColName).Sum(c => c.ActualWidth);
+        ColName.Width = Math.Max(MinNameWidth, List.ActualWidth - others - ListChrome);
+    }
 
     // =====================================================================
     // Копіювання
@@ -231,7 +248,7 @@ public partial class FolderCompareWindow : Window
         var selected = List.SelectedItems.Cast<FolderRow>().Select(r => r.Entry).ToList();
         // Лише те, що є з боку-джерела і відрізняється; якщо вибрано і каталог, і щось усередині — досить каталогу.
         var picked = selected
-            .Where(e => (toRight ? e.Left : e.Right) != null && e.Status != EntryStatus.Same)
+            .Where(e => (toRight ? e.Left : e.Right) != null && e.Status is not (EntryStatus.Same or EntryStatus.NotCompared))
             .Where(e => !selected.Any(p => p != e && p.IsDirectory && e.RelativePath.StartsWith(p.RelativePath + "\\", StringComparison.OrdinalIgnoreCase)))
             .ToList();
         if (picked.Count == 0)

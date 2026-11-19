@@ -2,7 +2,28 @@ using ByteCommander.Services;
 
 namespace ByteCommander.Compare;
 
-public enum EntryStatus { Same, Different, LeftOnly, RightOnly }
+/// <summary>Статус елемента. NotCompared — посилання (junction/symlink), вміст якого не порівнювався, або каталог, що містить такі.</summary>
+public enum EntryStatus { Same, Different, LeftOnly, RightOnly, NotCompared }
+
+/// <summary>Лічильник підсумку, до якого належить статус.</summary>
+public enum CountBucket { None, Same, Different, LeftOnly, RightOnly, NotCompared }
+
+/// <summary>Як статус показується (позначка, текст) і до якого лічильника входить.</summary>
+public sealed record EntryStatusInfo(string Mark, string Text, string DirectoryText, CountBucket Bucket)
+{
+    static readonly Dictionary<EntryStatus, EntryStatusInfo> Map = new()
+    {
+        [EntryStatus.Same] = new("=", "Однакові", "Однакові", CountBucket.Same),
+        [EntryStatus.Different] = new("≠", "Різні", "Є відмінності всередині", CountBucket.Different),
+        [EntryStatus.LeftOnly] = new("◀", "Лише зліва", "Лише зліва", CountBucket.LeftOnly),
+        [EntryStatus.RightOnly] = new("▶", "Лише справа", "Лише справа", CountBucket.RightOnly),
+        [EntryStatus.NotCompared] = new("↪", LinkText, "Містить посилання, вміст яких не порівнюється", CountBucket.NotCompared),
+    };
+
+    public const string LinkText = "Посилання (junction/symlink) — вміст не порівнюється";
+
+    public static EntryStatusInfo Of(EntryStatus s) => Map[s];
+}
 
 public sealed record FolderCompareOptions(bool ByContent = false);
 
@@ -13,6 +34,8 @@ public sealed class FolderEntry
     /// <summary>Шлях відносно коренів порівняння ("" для самого кореня).</summary>
     public required string RelativePath { get; init; }
     public bool IsDirectory { get; init; }
+    /// <summary>Хоча б з одного боку це reparse-point (junction/symlink): вміст не обходиться.</summary>
+    public bool IsLink { get; internal set; }
     public FileSystemInfo? Left { get; init; }
     public FileSystemInfo? Right { get; init; }
     public EntryStatus Status { get; internal set; }
@@ -33,7 +56,7 @@ public sealed class FolderEntry
 public static class FolderComparer
 {
     static readonly TimeSpan TimeTolerance = TimeSpan.FromSeconds(2);
-    static readonly EnumerationOptions Flat = new() { AttributesToSkip = 0, IgnoreInaccessible = true };
+    static readonly EnumerationOptions ShallowListing = new() { AttributesToSkip = 0, IgnoreInaccessible = true };
 
     public static FolderEntry Compare(string left, string right, FolderCompareOptions options,
         CancellationToken ct = default, Action<string>? progress = null)
@@ -56,9 +79,9 @@ public static class FolderComparer
         {
             bool nested = dir.RelativePath.Length > 0;   // корінь, вибраний користувачем, обходимо навіть якщо це посилання
             if (dir.Left is DirectoryInfo ld && !(nested && IsLink(ld)))
-                foreach (var e in ld.EnumerateFileSystemInfos("*", Flat)) byName[e.Name] = (e, null);
+                foreach (var e in ld.EnumerateFileSystemInfos("*", ShallowListing)) byName[e.Name] = (e, null);
             if (dir.Right is DirectoryInfo rd && !(nested && IsLink(rd)))
-                foreach (var e in rd.EnumerateFileSystemInfos("*", Flat))
+                foreach (var e in rd.EnumerateFileSystemInfos("*", ShallowListing))
                     byName[e.Name] = byName.TryGetValue(e.Name, out var x) ? (x.l, e) : (null, e);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -72,11 +95,11 @@ public static class FolderComparer
             // Файл з одного боку і каталог з іншого — це різні об’єкти: показуємо обидва окремо.
             if (l != null && r != null && lDir != rDir)
             {
-                dir.Children.Add(Single(name, dir.RelativePath, l, null, o, ct, progress));
-                dir.Children.Add(Single(name, dir.RelativePath, null, r, o, ct, progress));
+                dir.Children.Add(CreateEntry(name, dir.RelativePath, l, null, o, ct, progress));
+                dir.Children.Add(CreateEntry(name, dir.RelativePath, null, r, o, ct, progress));
                 continue;
             }
-            dir.Children.Add(Single(name, dir.RelativePath, l, r, o, ct, progress));
+            dir.Children.Add(CreateEntry(name, dir.RelativePath, l, r, o, ct, progress));
         }
 
         dir.Children.Sort((x, y) => x.IsDirectory != y.IsDirectory
@@ -84,10 +107,12 @@ public static class FolderComparer
             : NativeMethods.StrCmpLogicalW(x.Name, y.Name));
 
         if (dir.Left != null && dir.Right != null)
-            dir.Status = dir.Error == null && dir.Children.All(c => c.Status == EntryStatus.Same) ? EntryStatus.Same : EntryStatus.Different;
+            dir.Status = dir.Error != null || dir.Children.Any(c => c.Status is EntryStatus.Different or EntryStatus.LeftOnly or EntryStatus.RightOnly)
+                ? EntryStatus.Different
+                : dir.Children.Any(c => c.Status == EntryStatus.NotCompared) ? EntryStatus.NotCompared : EntryStatus.Same;
     }
 
-    static FolderEntry Single(string name, string parentRel, FileSystemInfo? l, FileSystemInfo? r,
+    static FolderEntry CreateEntry(string name, string parentRel, FileSystemInfo? l, FileSystemInfo? r,
         FolderCompareOptions o, CancellationToken ct, Action<string>? progress)
     {
         bool isDir = (l ?? r) is DirectoryInfo;
@@ -97,7 +122,12 @@ public static class FolderComparer
             IsDirectory = isDir, Left = l, Right = r,
             Status = l == null ? EntryStatus.RightOnly : r == null ? EntryStatus.LeftOnly : EntryStatus.Same,
         };
-        if (isDir) Fill(e, o, ct, progress);
+        if (isDir)
+        {
+            e.IsLink = l is DirectoryInfo ld && IsLink(ld) || r is DirectoryInfo rd && IsLink(rd);
+            if (e.IsLink && l != null && r != null) e.Status = EntryStatus.NotCompared;   // вміст посилань не порівнюємо
+            else Fill(e, o, ct, progress);
+        }
         else if (l is FileInfo lf && r is FileInfo rf) CompareFiles(e, lf, rf, o, ct);
         return e;
     }
@@ -109,7 +139,7 @@ public static class FolderComparer
         bool same;
         try
         {
-            same = l.Length == r.Length && (o.ByContent ? ContentEquals(l.FullName, r.FullName, ct) : sameTime);
+            same = l.Length == r.Length && (o.ByContent ? Util.FilesEqual(l.FullName, r.FullName, ct) : sameTime);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -124,32 +154,6 @@ public static class FolderComparer
         }
     }
 
-    /// <summary>Побайтне порівняння двох файлів однакового розміру.</summary>
-    public static bool ContentEquals(string a, string b, CancellationToken ct = default) => FirstDifference(a, b, ct) == null;
-
-    /// <summary>Зміщення першого відмінного байта (або довжина коротшого, якщо один — початок іншого); null — однакові.</summary>
-    public static long? FirstDifference(string a, string b, CancellationToken ct = default)
-    {
-        const int Chunk = 1 << 20;
-        using var fa = Util.OpenShared(a, FileOptions.SequentialScan);
-        using var fb = Util.OpenShared(b, FileOptions.SequentialScan);
-        var ba = new byte[Chunk];
-        var bb = new byte[Chunk];
-        long offset = 0;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            int na = fa.ReadAtLeast(ba, Chunk, throwOnEndOfStream: false);
-            int nb = fb.ReadAtLeast(bb, Chunk, throwOnEndOfStream: false);
-            int common = Math.Min(na, nb);
-            int diff = ba.AsSpan(0, common).CommonPrefixLength(bb.AsSpan(0, common));
-            if (diff < common) return offset + diff;
-            if (na != nb) return offset + common;
-            if (na == 0) return null;
-            offset += na;
-        }
-    }
-
     static bool IsLink(DirectoryInfo d)
     {
         try { return d.Attributes.HasFlag(FileAttributes.ReparsePoint); }
@@ -157,27 +161,22 @@ public static class FolderComparer
     }
 
     /// <summary>Скільки елементів якого статусу (без каталогів, що лише містять відмінності).</summary>
-    public static (int same, int different, int leftOnly, int rightOnly) Count(FolderEntry root)
+    public static (int same, int different, int leftOnly, int rightOnly, int notCompared) Count(FolderEntry root)
     {
-        int s = 0, d = 0, l = 0, r = 0;
+        var n = new int[Enum.GetValues<CountBucket>().Length];
         void Walk(FolderEntry e)
         {
             foreach (var c in e.Children)
             {
-                if (!c.IsDirectory || c.Status is EntryStatus.LeftOnly or EntryStatus.RightOnly)
-                {
-                    switch (c.Status)
-                    {
-                        case EntryStatus.Same: s++; break;
-                        case EntryStatus.Different: d++; break;
-                        case EntryStatus.LeftOnly: l++; break;
-                        case EntryStatus.RightOnly: r++; break;
-                    }
-                }
-                if (c.IsDirectory && c.Status is not (EntryStatus.LeftOnly or EntryStatus.RightOnly)) Walk(c);
+                var info = EntryStatusInfo.Of(c.Status);
+                // Каталог рахується сам лише якщо його вміст не розкривається (лише з одного боку або посилання).
+                bool leaf = !c.IsDirectory || c.IsLink || c.Status is EntryStatus.LeftOnly or EntryStatus.RightOnly;
+                if (leaf && info.Bucket != CountBucket.None) n[(int)info.Bucket]++;
+                if (c.IsDirectory && !c.IsLink && c.Status is not (EntryStatus.LeftOnly or EntryStatus.RightOnly)) Walk(c);
             }
         }
         Walk(root);
-        return (s, d, l, r);
+        return (n[(int)CountBucket.Same], n[(int)CountBucket.Different], n[(int)CountBucket.LeftOnly],
+            n[(int)CountBucket.RightOnly], n[(int)CountBucket.NotCompared]);
     }
 }

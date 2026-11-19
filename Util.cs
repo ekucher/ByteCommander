@@ -99,6 +99,32 @@ public static class Util
     public static FileStream OpenShared(string path, FileOptions options = FileOptions.None) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, options);
 
+    /// <summary>Побайтне порівняння двох файлів.</summary>
+    public static bool FilesEqual(string a, string b, CancellationToken ct = default) => FirstDifference(a, b, ct) == null;
+
+    /// <summary>Зміщення першого відмінного байта (або довжина коротшого, якщо один — початок іншого); null — однакові.</summary>
+    public static long? FirstDifference(string a, string b, CancellationToken ct = default)
+    {
+        const int Chunk = 1 << 20;
+        using var fa = OpenShared(a, FileOptions.SequentialScan);
+        using var fb = OpenShared(b, FileOptions.SequentialScan);
+        var ba = new byte[Chunk];
+        var bb = new byte[Chunk];
+        long offset = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            int na = fa.ReadAtLeast(ba, Chunk, throwOnEndOfStream: false);
+            int nb = fb.ReadAtLeast(bb, Chunk, throwOnEndOfStream: false);
+            int common = Math.Min(na, nb);
+            int diff = ba.AsSpan(0, common).CommonPrefixLength(bb.AsSpan(0, common));
+            if (diff < common) return offset + diff;
+            if (na != nb) return offset + common;
+            if (na == 0) return null;
+            offset += na;
+        }
+    }
+
     /// <summary>Дескриптор файлу на читання з тим самим спільним доступом, що й <see cref="OpenShared"/> (для RandomAccess).</summary>
     public static Microsoft.Win32.SafeHandles.SafeFileHandle OpenSharedHandle(string path) =>
         File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, FileOptions.RandomAccess);
