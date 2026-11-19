@@ -1,6 +1,10 @@
 using System.Text;
+using ByteCommander.Services;
 
 namespace ByteCommander.Compare;
+
+/// <summary>Частина рядка: початок і довжина в символах.</summary>
+public readonly record struct TextSpan(int Start, int Length);
 
 /// <summary>Рядок порівняння поруч: однаковий, змінений (є з обох боків), видалений (лише зліва), доданий (лише справа).</summary>
 public enum DiffKind { Equal, Changed, Deleted, Inserted }
@@ -15,11 +19,10 @@ public sealed class DiffRow
     public int? RightLine { get; init; }
     public string LeftText { get; init; } = "";
     public string RightText { get; init; } = "";
-    /// <summary>Змінена частина рядка (для <see cref="DiffKind.Changed"/>): початок і довжина в символах.</summary>
-    public int HighlightStartLeft { get; init; }
-    public int HighlightLengthLeft { get; init; }
-    public int HighlightStartRight { get; init; }
-    public int HighlightLengthRight { get; init; }
+    /// <summary>Змінена частина лівого рядка (для <see cref="DiffKind.Changed"/>).</summary>
+    public TextSpan HighlightLeft { get; init; }
+    /// <summary>Змінена частина правого рядка (для <see cref="DiffKind.Changed"/>).</summary>
+    public TextSpan HighlightRight { get; init; }
     /// <summary>Номер блоку відмінностей, до якого належить рядок; -1 для однакових.</summary>
     public int Hunk { get; init; } = -1;
 
@@ -41,6 +44,9 @@ public sealed class TextDiffResult
     /// </summary>
     public bool Approximate { get; init; }
     public bool Identical => HunkStarts.Count == 0;
+    /// <summary>Скільки рядків було зліва й справа, коли рахували порівняння (щоб не застосувати застаріле).</summary>
+    public int LeftLineCount { get; init; }
+    public int RightLineCount { get; init; }
 }
 
 /// <summary>
@@ -95,11 +101,7 @@ public static class TextDiff
     /// <summary>Сценарій редагування a → b: послідовність Equal / Delete / Insert.</summary>
     internal static List<Op> Script(int[] a, int[] b, CancellationToken ct, out bool approximate)
     {
-        int pre = 0;
-        while (pre < a.Length && pre < b.Length && a[pre] == b[pre]) pre++;
-        int suf = 0;
-        while (suf < a.Length - pre && suf < b.Length - pre && a[a.Length - 1 - suf] == b[b.Length - 1 - suf]) suf++;
-
+        var (pre, suf) = CommonEnds<int>(a, b);
         var ops = new List<Op>(a.Length + b.Length);
         for (int i = 0; i < pre; i++) ops.Add(Op.Equal);
         ops.AddRange(Myers(a, pre, a.Length - suf, b, pre, b.Length - suf, ct, out approximate));
@@ -201,12 +203,12 @@ public static class TextDiff
             int pairs = Math.Min(dels.Count, ins.Count);
             for (int t = 0; t < pairs; t++)
             {
-                var (ls, ll, rs, rl) = InlineDifference(left[dels[t]], right[ins[t]]);
+                var (hl, hr) = InlineDifference(left[dels[t]], right[ins[t]]);
                 rows.Add(new DiffRow
                 {
                     Kind = DiffKind.Changed, LeftLine = dels[t], RightLine = ins[t],
                     LeftText = left[dels[t]], RightText = right[ins[t]],
-                    HighlightStartLeft = ls, HighlightLengthLeft = ll, HighlightStartRight = rs, HighlightLengthRight = rl,
+                    HighlightLeft = hl, HighlightRight = hr,
                     Hunk = hunk,
                 });
                 changed++;
@@ -225,17 +227,114 @@ public static class TextDiff
         return new TextDiffResult
         {
             Rows = rows, HunkStarts = hunks, ChangedLines = changed, DeletedLines = deleted, InsertedLines = inserted,
-            Approximate = approximate,
+            Approximate = approximate, LeftLineCount = left.Count, RightLineCount = right.Count,
         };
     }
 
-    /// <summary>Змінена середина рядка: усе між спільним початком і спільним кінцем.</summary>
-    internal static (int leftStart, int leftLength, int rightStart, int rightLength) InlineDifference(string l, string r)
+    /// <summary>
+    /// Довжини спільного початку й спільного кінця двох послідовностей (кінець не заходить на початок):
+    /// усе, що між ними, — змінена середина.
+    /// </summary>
+    internal static (int Prefix, int Suffix) CommonEnds<T>(ReadOnlySpan<T> a, ReadOnlySpan<T> b) where T : IEquatable<T>
     {
-        int pre = 0;
-        while (pre < l.Length && pre < r.Length && l[pre] == r[pre]) pre++;
+        int pre = a.CommonPrefixLength(b);
         int suf = 0;
-        while (suf < l.Length - pre && suf < r.Length - pre && l[l.Length - 1 - suf] == r[r.Length - 1 - suf]) suf++;
-        return (pre, l.Length - pre - suf, pre, r.Length - pre - suf);
+        while (suf < a.Length - pre && suf < b.Length - pre && a[a.Length - 1 - suf].Equals(b[b.Length - 1 - suf])) suf++;
+        return (pre, suf);
+    }
+
+    /// <summary>Змінена середина рядка: усе між спільним початком і спільним кінцем.</summary>
+    internal static (TextSpan Left, TextSpan Right) InlineDifference(string l, string r)
+    {
+        var (pre, suf) = CommonEnds<char>(l, r);
+        return (new TextSpan(pre, l.Length - pre - suf), new TextSpan(pre, r.Length - pre - suf));
+    }
+
+    // =====================================================================
+    // Перенесення блоку
+    // =====================================================================
+
+    /// <summary>
+    /// Перенести блок відмінностей <paramref name="hunk"/> в інший бік: рядки блоку з боку-джерела замінюють
+    /// рядки цього блоку з боку-цілі (якщо там їх немає — вставляються перед наступним спільним рядком).
+    /// Перенесені рядки отримують переважний перенос рядка цілі; решта рядків цілі зберігає свої переноси,
+    /// а файл — свій стан «кінцевий перенос рядка». Порожня ціль переймає переноси й кінцевий перенос джерела.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Порівняння пораховане для інших рядків (застаріле).</exception>
+    public static void CopyHunk(TextDiffResult diff, int hunk, TextLines left, TextLines right, bool toRight)
+    {
+        if (diff.LeftLineCount != left.Count || diff.RightLineCount != right.Count)
+            throw new InvalidOperationException("Порівняння застаріле — рядки вже змінено.");
+        if (hunk < 0 || hunk >= diff.HunkStarts.Count) throw new ArgumentOutOfRangeException(nameof(hunk));
+
+        var (from, to) = toRight ? (left, right) : (right, left);
+        int? Src(DiffRow r) => toRight ? r.LeftLine : r.RightLine;
+        int? Dst(DiffRow r) => toRight ? r.RightLine : r.LeftLine;
+
+        int first = diff.HunkStarts[hunk], end = first;
+        while (end < diff.Rows.Count && diff.Rows[end].Hunk == hunk) end++;
+        var src = new List<int>();
+        var dst = new List<int>();
+        for (int i = first; i < end; i++)
+        {
+            if (Src(diff.Rows[i]) is int s) src.Add(s);
+            if (Dst(diff.Rows[i]) is int d) dst.Add(d);
+        }
+        // З боку-цілі блоку немає — вставляємо перед наступним спільним рядком (або в кінець).
+        int start = dst.Count > 0 ? dst.Min() : end < diff.Rows.Count ? Dst(diff.Rows[end]) ?? to.Count : to.Count;
+
+        bool targetWasEmpty = to.Count == 0;
+        string ending = to.PredominantEnding ?? from.PredominantEnding ?? TextLines.CrLf;
+        bool trailing = targetWasEmpty ? from.TrailingNewLine : to.TrailingNewLine;
+        string lastEnding = !targetWasEmpty && to.TrailingNewLine ? to.Endings[^1] : ending;
+
+        to.Lines.RemoveRange(start, dst.Count);
+        to.Endings.RemoveRange(start, dst.Count);
+        to.Lines.InsertRange(start, src.Select(i => from.Lines[i]));
+        to.Endings.InsertRange(start, Enumerable.Repeat(ending, src.Count));
+
+        int n = to.Count;
+        if (n == 0) return;
+        // Рядок перед вставкою був останнім (без переносу), а тепер за ним є інші — йому потрібен перенос.
+        if (start > 0 && start - 1 < n - 1 && to.Endings[start - 1].Length == 0) to.Endings[start - 1] = ending;
+        // Останній рядок: стан «кінцевий перенос» файлу не змінюється від перенесення блоку.
+        if (!trailing) to.Endings[n - 1] = "";
+        else if (start + src.Count == n) to.Endings[n - 1] = lastEnding;
+    }
+
+    // =====================================================================
+    // Відмінності формату при однаковому вмісті
+    // =====================================================================
+
+    /// <summary>
+    /// Чим відрізняються файли з однаковими рядками: кодування, BOM, переноси рядків, кінцевий перенос.
+    /// Порожній список — формат той самий. Рядки мають бути однакові (порівняння без «ігнорувати…»).
+    /// </summary>
+    public static List<string> FormatDifferences(Encoding leftEncoding, TextLines left, Encoding rightEncoding, TextLines right)
+    {
+        static string Only(bool onLeft) => onLeft ? "є лише зліва" : "є лише справа";
+        var parts = new List<string>();
+        if (leftEncoding.CodePage != rightEncoding.CodePage)
+            parts.Add($"кодування ({TextEncodings.NameOf(leftEncoding)} ↔ {TextEncodings.NameOf(rightEncoding)})");
+        bool leftBom = leftEncoding.GetPreamble().Length > 0, rightBom = rightEncoding.GetPreamble().Length > 0;
+        if (leftBom != rightBom) parts.Add($"BOM ({Only(leftBom)})");
+
+        int n = Math.Min(left.Count, right.Count);
+        bool endingsDiffer = false;
+        for (int i = 0; i < n && !endingsDiffer; i++)
+        {
+            string l = left.Endings[i], r = right.Endings[i];
+            // Відсутній перенос в останньому рядку — це «кінцевий перенос», а не інший тип переносу.
+            if (l.Length == 0 || r.Length == 0) continue;
+            endingsDiffer = l != r;
+        }
+        if (endingsDiffer)
+        {
+            string? ls = left.EndingsSummary, rs = right.EndingsSummary;
+            parts.Add(ls != rs ? $"переноси рядків ({ls} ↔ {rs})" : $"переноси рядків (по-різному {ls})");
+        }
+        if (left.TrailingNewLine != right.TrailingNewLine)
+            parts.Add($"кінцевий перенос рядка ({Only(left.TrailingNewLine)})");
+        return parts;
     }
 }

@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using ByteCommander.Services;
 
 namespace ByteCommander.Compare;
@@ -20,46 +22,41 @@ public partial class TextCompareWindow : Window
     /// <summary>Горизонтальний зсув тексту в пікселях — спільний для обох сторін.</summary>
     public double HOffset { get => (double)GetValue(HOffsetProperty); set => SetValue(HOffsetProperty, value); }
 
-    /// <summary>Одна сторона порівняння: файл, його рядки й формат, щоб зберегти назад так само.</summary>
+    /// <summary>
+    /// Одна сторона порівняння: файл, його рядки з власними переносами й кодування (з BOM чи без),
+    /// щоб незмінений файл зберігся байт у байт так само.
+    /// </summary>
     sealed class Side
     {
         public required string Path { get; set; }
-        public List<string> Lines { get; set; } = new();
+        public TextLines Text { get; private set; } = new();
         public Encoding Encoding { get; set; } = new UTF8Encoding(false);
-        public string NewLine { get; set; } = "\r\n";
-        public bool TrailingNewLine { get; set; }
-        public bool Dirty { get; set; }
+        /// <summary>Байти файлу, як їх прочитано (поки сторону не змінено) — для перевірки «файли однакові».</summary>
+        byte[] original = Array.Empty<byte>();
+        public bool Dirty { get; private set; }
 
         public static Side Load(string path)
         {
             var bytes = File.ReadAllBytes(path);
-            var enc = TextEncodings.Detect(bytes, truncated: false);
-            int skip = TextEncodings.PreambleLength(bytes, enc);
-            var text = enc.GetString(bytes, skip, bytes.Length - skip);
-            var side = new Side { Path = path, Encoding = enc, NewLine = text.Contains("\r\n") ? "\r\n" : "\n" };
-            var lines = text.Split('\n').Select(l => l.EndsWith('\r') ? l[..^1] : l).ToList();
-            if (lines.Count > 0 && lines[^1].Length == 0 && text.Length > 0)
-            {
-                lines.RemoveAt(lines.Count - 1);
-                side.TrailingNewLine = true;
-            }
-            if (text.Length == 0) lines.Clear();
-            side.Lines = lines;
-            return side;
+            var (text, enc) = TextEncodings.Decode(bytes);
+            return new Side { Path = path, Encoding = enc, Text = TextLines.Parse(text), original = bytes };
         }
 
-        public void Save()
+        public void MarkDirty() => Dirty = true;
+
+        /// <summary>Поточний вміст у байтах: незмінений — як на диску, змінений — як буде збережено.</summary>
+        public byte[] CurrentBytes() => Dirty ? TextEncodings.Encode(Text.Join(), Encoding) : original;
+
+        /// <summary>Зберегти; false — користувач скасував (символів немає в кодуванні файлу).</summary>
+        public bool Save(Func<string, bool> confirmUtf8)
         {
-            var text = string.Join(NewLine, Lines) + (TrailingNewLine && Lines.Count > 0 ? NewLine : "");
-            var pre = Encoding.GetPreamble();
-            var body = Encoding.GetBytes(text);
-            Util.WriteViaTemp(Path, tmp =>
-            {
-                using var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write);
-                fs.Write(pre);
-                fs.Write(body);
-            }, keepDestinationMetadata: true);
+            var text = Text.Join();
+            if (TextEncodings.EncodingForSave(text, Encoding, confirmUtf8) is not { } enc) return false;
+            TextEncodings.WriteFile(Path, text, enc);
+            Encoding = enc;
             Dirty = false;
+            original = TextEncodings.Encode(text, enc);
+            return true;
         }
     }
 
@@ -68,10 +65,19 @@ public partial class TextCompareWindow : Window
     List<DiffRow> shown = new();
     CancellationTokenSource? computeCts;
     bool binary;
+    /// <summary>Перша побайтна відмінність двійкових файлів (для «Відкрити обидва в hex»).</summary>
+    long? firstDifference;
+    /// <summary>
+    /// Лічильник змін рядків (перенесення блоку, перечитування, обмін сторін) і версія, для якої пораховано
+    /// <see cref="diff"/>. Поки вони різні, порівняння застаріле — переносити блок за ним не можна.
+    /// </summary>
+    int version, diffVersion = -1;
+    double? charWidth;
 
     public TextCompareWindow(string leftPath, string rightPath)
     {
         InitializeComponent();
+        Util.ApplyWindowTheme(this);
         left = new Side { Path = leftPath };
         right = new Side { Path = rightPath };
         Loaded += async (_, _) => await LoadAsync();
@@ -97,6 +103,7 @@ public partial class TextCompareWindow : Window
                 return;
             }
             (left, right) = await Task.Run(() => (Side.Load(lp), Side.Load(rp)));
+            version++;
             BinaryPanel.Visibility = Visibility.Collapsed;
             TextPanel.Visibility = Visibility.Visible;
             await RecomputeAsync(selectFirst: true);
@@ -126,6 +133,7 @@ public partial class TextCompareWindow : Window
         var lp = left.Path;
         var rp = right.Path;
         long? at = await Task.Run(() => FolderComparer.FirstDifference(lp, rp));
+        firstDifference = at;
         long ls = new FileInfo(lp).Length, rs = new FileInfo(rp).Length;
         var sizes = $"Розміри: {Util.FormatSize(ls)} ({ls:N0} Б) / {Util.FormatSize(rs)} ({rs:N0} Б)";
         BinaryText.Text = at is long off
@@ -142,7 +150,8 @@ public partial class TextCompareWindow : Window
         computeCts?.Cancel();
         var cts = computeCts = new CancellationTokenSource();
         StatusText.Text = "Порівняння…";
-        var (l, r, o) = (left.Lines, right.Lines, Options);
+        // Знімки рядків: фонове порівняння не бачить змін, зроблених тим часом у вікні.
+        var (l, r, o, v) = (left.Text.Lines.ToArray(), right.Text.Lines.ToArray(), Options, version);
         TextDiffResult result;
         try
         {
@@ -154,6 +163,7 @@ public partial class TextCompareWindow : Window
         }
         if (cts != computeCts) return;
         diff = result;
+        diffVersion = v;
         ApplyView();
         UpdateHeaders();
         UpdateStatus();
@@ -175,14 +185,23 @@ public partial class TextCompareWindow : Window
         if (diff == null || binary) return;
         // Моноширинний шрифт: ширина найдовшого рядка ≈ символи × ширина символу.
         int longest = diff.Rows.Count == 0 ? 0 : diff.Rows.Max(r => Math.Max(r.LeftText.Length, r.RightText.Length));
-        double charWidth = 7.8;
         double half = Math.Max(100, Rows.ActualWidth / 2 - 70);
-        double max = Math.Max(0, longest * charWidth - half + 20);
+        double max = Math.Max(0, longest * CharWidth() - half + 20);
         HBar.Maximum = max;
         HBar.ViewportSize = half;
         HBar.LargeChange = half * 0.8;
         HBar.Visibility = max > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (HBar.Value > max) HBar.Value = max;
+    }
+
+    /// <summary>Ширина символу моноширинного шрифту списку (виміряна, з урахуванням DPI).</summary>
+    double CharWidth()
+    {
+        if (charWidth is double w) return w;
+        var typeface = new Typeface(Rows.FontFamily, Rows.FontStyle, Rows.FontWeight, Rows.FontStretch);
+        var probe = new FormattedText("M", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, Rows.FontSize,
+            Brushes.Black, VisualTreeHelper.GetDpi(Rows).PixelsPerDip);
+        return (charWidth = probe.WidthIncludingTrailingWhitespace).Value;
     }
 
     void HBar_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => HOffset = e.NewValue;
@@ -204,7 +223,7 @@ public partial class TextCompareWindow : Window
         if (diff.Identical)
         {
             bool optionsOn = IgnoreWhitespaceBox.IsChecked == true || IgnoreCaseBox.IsChecked == true;
-            StatusText.Text = optionsOn ? "Відмінностей немає (з урахуванням вибраних «ігнорувати…»)" : "Файли однакові";
+            StatusText.Text = optionsOn ? "Відмінностей немає (з урахуванням вибраних «ігнорувати…»)" : IdenticalContentStatus();
             return;
         }
         var parts = new List<string> { Util.Count(diff.HunkStarts.Count, "відмінність", "відмінності", "відмінностей") };
@@ -215,6 +234,19 @@ public partial class TextCompareWindow : Window
         int cur = CurrentHunk();
         StatusText.Text = (cur >= 0 ? $"{cur + 1} / {diff.HunkStarts.Count}  ·  " : "") + string.Join("  ·  ", parts)
                           + "    F8 / Shift+F8 — наступна / попередня,  Alt+→ / Alt+← — перенести блок";
+    }
+
+    /// <summary>
+    /// Рядки однакові: «Файли однакові» — лише якщо однакові й байти; інакше — чим саме відрізняється формат
+    /// (кодування, BOM, переноси рядків, кінцевий перенос).
+    /// </summary>
+    string IdenticalContentStatus()
+    {
+        var parts = TextDiff.FormatDifferences(left.Encoding, left.Text, right.Encoding, right.Text);
+        if (parts.Count > 0) return "Вміст однаковий, але файли відрізняються: " + string.Join(", ", parts);
+        return left.CurrentBytes().AsSpan().SequenceEqual(right.CurrentBytes())
+            ? "Файли однакові"
+            : "Вміст однаковий, але файли відрізняються побайтно (неоднозначне декодування)";
     }
 
     // =====================================================================
@@ -281,29 +313,21 @@ public partial class TextCompareWindow : Window
     async Task CopyBlockAsync(bool toRight)
     {
         if (diff == null || binary) return;
+        // Порівняння ще рахується після попередньої зміни: блоки й номери рядків у diff застарілі.
+        if (diffVersion != version)
+        {
+            StatusText.Text = "Зачекайте — порівняння ще не завершено.";
+            return;
+        }
         int hunk = CurrentHunk();
         if (hunk < 0)
         {
             StatusText.Text = "Спершу перейдіть до відмінності (F8), яку треба перенести.";
             return;
         }
-        var rows = diff.Rows.Where(r => r.Hunk == hunk).ToList();
-        var (from, to) = toRight ? (left, right) : (right, left);
-        int? Line(DiffRow r, bool fromSide) => (fromSide ? toRight : !toRight) ? r.LeftLine : r.RightLine;
-
-        var newLines = rows.Where(r => Line(r, true) != null).Select(r => from.Lines[Line(r, true)!.Value]).ToList();
-        var targetIdx = rows.Where(r => Line(r, false) != null).Select(r => Line(r, false)!.Value).ToList();
-        int start;
-        if (targetIdx.Count > 0) start = targetIdx.Min();
-        else
-        {
-            // З цього боку блоку немає — вставляємо перед наступним спільним рядком.
-            int after = IndexOfRow(rows[^1]) + 1;
-            start = after < diff.Rows.Count ? Line(diff.Rows[after], false) ?? to.Lines.Count : to.Lines.Count;
-        }
-        to.Lines.RemoveRange(start, targetIdx.Count);
-        to.Lines.InsertRange(start, newLines);
-        to.Dirty = true;
+        TextDiff.CopyHunk(diff, hunk, left.Text, right.Text, toRight);
+        (toRight ? right : left).MarkDirty();
+        version++;
         await RecomputeAsync(keepHunk: hunk);
     }
 
@@ -311,9 +335,14 @@ public partial class TextCompareWindow : Window
     {
         try
         {
-            if (left.Dirty) left.Save();
-            if (right.Dirty) right.Save();
+            bool saved = SaveSide(left) && SaveSide(right);
             UpdateHeaders();
+            UpdateStatus();
+            if (!saved)
+            {
+                StatusText.Text = "Збереження скасовано.";
+                return false;
+            }
             StatusText.Text = $"Збережено о {DateTime.Now:HH:mm:ss}";
             return true;
         }
@@ -323,6 +352,11 @@ public partial class TextCompareWindow : Window
             return false;
         }
     }
+
+    bool SaveSide(Side s) => !s.Dirty || s.Save(bad => Dialogs.Ask(this, "Кодування",
+        $"У «{Path.GetFileName(s.Path)}» є символи, яких немає в кодуванні {TextEncodings.NameOf(s.Encoding)} " +
+        $"(наприклад, «{bad}»): збережені так, вони стали б знаками «?».\n\nЗберегти файл у UTF-8?",
+        new[] { "Зберегти в UTF-8", "Скасувати" }, 0, 1) == 0);
 
     bool ConfirmDiscard()
     {
@@ -378,6 +412,7 @@ public partial class TextCompareWindow : Window
     async void Swap_Click(object sender, RoutedEventArgs e)
     {
         (left, right) = (right, left);
+        version++;
         if (binary) await ShowBinaryAsync();
         else await RecomputeAsync(selectFirst: true);
     }
@@ -390,7 +425,8 @@ public partial class TextCompareWindow : Window
 
     void Hex_Click(object sender, RoutedEventArgs e)
     {
-        new ViewerWindow(left.Path, ViewerMode.View) { Owner = this }.Show();
-        new ViewerWindow(right.Path, ViewerMode.View) { Owner = this }.Show();
+        // Завжди hex (навіть для зображень і великих текстів), одразу на першій відмінності.
+        new ViewerWindow(left.Path, ViewerMode.Hex) { Owner = this, HighlightOffset = firstDifference }.Show();
+        new ViewerWindow(right.Path, ViewerMode.Hex) { Owner = this, HighlightOffset = firstDifference }.Show();
     }
 }

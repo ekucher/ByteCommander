@@ -11,8 +11,7 @@ namespace ByteCommander.Compare;
 public sealed class DiffLineText : TextBlock
 {
     public static readonly DependencyProperty LineProperty = Register(nameof(Line), typeof(string), "");
-    public static readonly DependencyProperty HighlightStartProperty = Register(nameof(HighlightStart), typeof(int), 0);
-    public static readonly DependencyProperty HighlightLengthProperty = Register(nameof(HighlightLength), typeof(int), 0);
+    public static readonly DependencyProperty HighlightProperty = Register(nameof(Highlight), typeof(TextSpan), default(TextSpan));
     public static readonly DependencyProperty OffsetProperty = Register(nameof(Offset), typeof(double), 0.0);
 
     static DependencyProperty Register(string name, Type type, object def) =>
@@ -20,8 +19,8 @@ public sealed class DiffLineText : TextBlock
             new PropertyMetadata(def, (d, _) => ((DiffLineText)d).Rebuild()));
 
     public string Line { get => (string)GetValue(LineProperty); set => SetValue(LineProperty, value); }
-    public int HighlightStart { get => (int)GetValue(HighlightStartProperty); set => SetValue(HighlightStartProperty, value); }
-    public int HighlightLength { get => (int)GetValue(HighlightLengthProperty); set => SetValue(HighlightLengthProperty, value); }
+    /// <summary>Змінена частина рядка, яку треба підсвітити.</summary>
+    public TextSpan Highlight { get => (TextSpan)GetValue(HighlightProperty); set => SetValue(HighlightProperty, value); }
     public double Offset { get => (double)GetValue(OffsetProperty); set => SetValue(OffsetProperty, value); }
 
     public DiffLineText()
@@ -34,8 +33,9 @@ public sealed class DiffLineText : TextBlock
         Margin = new Thickness(-Offset, 0, 0, 0);
         Inlines.Clear();
         var s = Line ?? "";
-        int start = Math.Clamp(HighlightStart, 0, s.Length);
-        int len = Math.Clamp(HighlightLength, 0, s.Length - start);
+        var h = Highlight;
+        int start = Math.Clamp(h.Start, 0, s.Length);
+        int len = Math.Clamp(h.Length, 0, s.Length - start);
         if (len == 0)
         {
             Inlines.Add(new Run(s));

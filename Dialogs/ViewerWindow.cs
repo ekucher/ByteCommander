@@ -10,8 +10,11 @@ using ByteCommander.Viewer;
 
 namespace ByteCommander;
 
-/// <summary>Переглядач (F3, лише читання) чи редактор (F4).</summary>
-public enum ViewerMode { View, Edit }
+/// <summary>
+/// Переглядач (F3, лише читання), редактор (F4) чи переглядач, що завжди відкриває файл у hex
+/// (незалежно від розширення й розміру — напр. для порівняння двійкових файлів).
+/// </summary>
+public enum ViewerMode { View, Edit, Hex }
 
 /// <summary>
 /// Переглядач (F3) і простий редактор (F4).
@@ -45,12 +48,21 @@ public sealed class ViewerWindow : Window
     string baseInfo = "";
     /// <summary>Під час стеження файл за шляхом зник (видалили; при ротації новий може з’явитися).</summary>
     bool fileMissing;
+    /// <summary><see cref="HighlightOffset"/> уже показано (не повторювати при перевідкритті / F4).</summary>
+    bool offsetShown;
     const string FollowHint = "  ·  Ctrl+End — стежити за змінами";
+
+    /// <summary>
+    /// Байт, який показати й підсвітити в hex одразу після відкриття (напр. перша відмінність при порівнянні).
+    /// Зміщення за кінцем файлу (файл коротший) — прокрутка в кінець без підсвічування.
+    /// </summary>
+    public long? HighlightOffset { get; init; }
 
     public ViewerWindow(string path, ViewerMode mode)
     {
         this.path = path;
         edit = mode == ViewerMode.Edit;
+        if (mode == ViewerMode.Hex) hex = hexDecided = true;
         Width = 1040;
         Height = 740;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -195,7 +207,7 @@ public sealed class ViewerWindow : Window
     {
         try
         {
-            if (!edit && ImageExt.Contains(Path.GetExtension(path)) && TryShowImage()) return;
+            if (!edit && !hex && ImageExt.Contains(Path.GetExtension(path)) && TryShowImage()) return;
 
             var fi = new FileInfo(path);
             if (edit && fi.Length > MaxTextBoxBytes)
@@ -233,7 +245,7 @@ public sealed class ViewerWindow : Window
         SetContent(Display.Text, text);
         var bytes = ReadHead((int)fi.Length);
         loading = true;
-        text.Text = Decode(bytes);
+        text.Text = TextEncodings.Decode(bytes, enc);
         loading = false;
         text.CaretIndex = 0;
         text.ScrollToHome();
@@ -246,9 +258,26 @@ public sealed class ViewerWindow : Window
     {
         fileMissing = false;
         SetContent(Display.Large, large);
-        baseInfo = hex ? "HEX" : TextEncodings.NameOf(enc);
+        baseInfo = !hex ? TextEncodings.NameOf(enc)
+            : HighlightOffset is long off ? $"HEX  ·  перша відмінність — байт {off:N0} (0x{off:X})"
+            : "HEX";
         large.SetSource(hex ? new HexRowSource(path) : new TextRowSource(path, enc));
         large.Focus();
+        if (hex && HighlightOffset is long at && !offsetShown)
+        {
+            offsetShown = true;
+            // Після розмітки: прокрутка залежить від висоти видимої області.
+            Dispatcher.InvokeAsync(() => ShowOffset(at), System.Windows.Threading.DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>Показати байт <paramref name="at"/> у hex і підсвітити його (за кінцем файлу — просто кінець).</summary>
+    void ShowOffset(long at)
+    {
+        if (display != Display.Large || large.Source is not HexRowSource src) return;
+        long row = at / HexRowSource.BytesPerRow;
+        if (at < src.Length) large.ShowMatch(new TextMatch(row, (int)(at % HexRowSource.BytesPerRow), 1));
+        else large.ScrollTo(Math.Max(0, row - 3));
     }
 
     static string Rows(long n) => $"{n:N0} {Util.Plural(n, "рядок", "рядки", "рядків")}";
@@ -326,12 +355,6 @@ public sealed class ViewerWindow : Window
         i = ((i < 0 ? 0 : i + dir) % list.Count + list.Count) % list.Count;
         path = list[i];
         if (!TryShowImage()) info.Text = "Не вдалося відкрити " + Path.GetFileName(path);
-    }
-
-    string Decode(byte[] b)
-    {
-        int skip = TextEncodings.PreambleLength(b, enc);
-        return enc.GetString(b, skip, b.Length - skip);
     }
 
     // ------------------------------------------------------------------ дії
@@ -470,19 +493,20 @@ public sealed class ViewerWindow : Window
         if (!edit) return true;
         try
         {
-            var pre = enc.GetPreamble();
-            var body = enc.GetBytes(text.Text);
-            // Через тимчасовий файл: збій посеред запису (місце на диску, знімний носій) не знищить оригінал.
-            // File.Replace зберігає атрибути, дату створення й права наявного файлу.
-            Util.WriteViaTemp(path, tmp =>
-            {
-                using var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write);
-                fs.Write(pre);
-                fs.Write(body);
-            }, keepDestinationMetadata: true);
+            var content = text.Text;
+            // Символів немає в кодуванні файлу — не перетворювати їх мовчки на «?», а запропонувати UTF-8.
+            var target = TextEncodings.EncodingForSave(content, enc, bad => Dialogs.Ask(this, "Кодування",
+                $"У тексті є символи, яких немає в кодуванні {TextEncodings.NameOf(enc)} (наприклад, «{bad}»): " +
+                "збережені так, вони стали б знаками «?».\n\nЗберегти файл у UTF-8?",
+                new[] { "Зберегти в UTF-8", "Скасувати" }, 0, 1) == 0);
+            if (target == null) return false;
+            // Через тимчасовий файл: збій посеред запису не знищить оригінал; атрибути й права зберігаються.
+            long size = TextEncodings.WriteFile(path, content, target);
+            enc = target;
+            encChosen = true;
             dirty = false;
             UpdateTitle();
-            info.Text = $"Збережено о {DateTime.Now:HH:mm:ss}  ·  {TextEncodings.NameOf(enc)}  ·  {Util.FormatSize(pre.Length + body.Length)}";
+            info.Text = $"Збережено о {DateTime.Now:HH:mm:ss}  ·  {TextEncodings.NameOf(enc)}  ·  {Util.FormatSize(size)}";
             return true;
         }
         catch (Exception ex)
