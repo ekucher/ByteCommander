@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using ByteCommander.Compare;
 
 namespace ByteCommander.Tests;
@@ -173,7 +173,7 @@ public sealed class FolderComparerTests(TestWorkspace ws)
         Assert.Equal(EntryStatus.LeftOnly, Find(root, @"lonely\b.txt").Status);
         Assert.Equal(EntryStatus.Different, root.Status);
         // однакові: same.txt, sametime.txt, sub\deep\a.txt; лише зліва: only-left.txt і каталог lonely
-        Assert.Equal((3, 1, 2, 1), FolderComparer.Count(root));
+        Assert.Equal((3, 1, 2, 1, 0), FolderComparer.Count(root));
     }
 
     [Fact]
@@ -196,8 +196,8 @@ public sealed class FolderComparerTests(TestWorkspace ws)
         File.WriteAllBytes(b, bytes);
         File.WriteAllBytes(c, bytes.AsSpan(0, 2_000_000).ToArray());
 
-        Assert.Equal(2_500_000L, FolderComparer.FirstDifference(a, b));
-        Assert.Equal(2_000_000L, FolderComparer.FirstDifference(a, c));
-        Assert.Null(FolderComparer.FirstDifference(a, a));
+        Assert.Equal(2_500_000L, Util.FirstDifference(a, b));
+        Assert.Equal(2_000_000L, Util.FirstDifference(a, c));
+        Assert.Null(Util.FirstDifference(a, a));
     }
 }

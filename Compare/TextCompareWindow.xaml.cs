@@ -125,7 +125,7 @@ public partial class TextCompareWindow : Window
         BinaryText.Text = "Порівняння…";
         var lp = left.Path;
         var rp = right.Path;
-        long? at = await Task.Run(() => FolderComparer.FirstDifference(lp, rp));
+        long? at = await Task.Run(() => Util.FirstDifference(lp, rp));
         long ls = new FileInfo(lp).Length, rs = new FileInfo(rp).Length;
         var sizes = $"Розміри: {Util.FormatSize(ls)} ({ls:N0} Б) / {Util.FormatSize(rs)} ({rs:N0} Б)";
         BinaryText.Text = at is long off
