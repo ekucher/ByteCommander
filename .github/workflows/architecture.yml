@@ -1,0 +1,141 @@
+# Architecture Gates (ADR-0014, docs/architecture/ci-gates.md).
+# Етап G0: усі jobs неблокуючі (continue-on-error) — вони звітують і записують baseline-артефакти,
+# але не роблять PR червоним. Посилення до ratchet/blocking — окремим PR (крок G0b).
+name: Architecture Gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arch-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  # Правила залежностей, цикли, розмір файлів, статичний стан, порожні catch — проти build/architecture-baseline.txt.
+  architecture-tests:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Architecture tests
+        run: dotnet test tests/ByteCommander.ArchitectureTests -c Release --logger "trx;LogFileName=arch.trx" --logger "console;verbosity=normal"
+      - name: Upload actual baseline
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: architecture-baseline-actual
+          path: tests/ByteCommander.ArchitectureTests/bin/Release/**/architecture-baseline.actual.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Попередження аналізаторів (SARIF) — перший прогін лише записує analyzers-baseline.json як артефакт.
+  analyzers:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build with analyzers
+        run: dotnet build FileManager.csproj -c Release -p:AnalysisLevel=latest-recommended "-p:ErrorLog=${{ github.workspace }}/analyzers.sarif%2Cversion=2.1"
+      - name: Analyzer baseline (report)
+        shell: pwsh
+        run: ./build/Compare-AnalyzerBaseline.ps1 -Sarif analyzers.sarif -Baseline build/analyzers-baseline.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: analyzers
+          path: |
+            analyzers.sarif
+            build/analyzers-baseline.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Форматування лише змінених .cs (до разового PR «лише форматування»).
+  format:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: dotnet format (changed files)
+        shell: pwsh
+        run: |
+          $base = if ($env:GITHUB_BASE_REF) { "origin/$env:GITHUB_BASE_REF" } else { 'HEAD~1' }
+          $files = @(git diff --name-only --diff-filter=ACMR $base -- '*.cs' | Where-Object { $_ -notlike 'tests/*' })
+          if ($files.Count -eq 0) { 'Немає змінених .cs застосунку'; exit 0 }
+          dotnet format FileManager.csproj --verify-no-changes --include $files
+
+  # Відомі вразливості NuGet (зокрема транзитивні) у тестових проєктах; застосунок пакетів не має.
+  dependencies:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Vulnerable packages
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($p in 'tests/ByteCommander.Tests', 'tests/ByteCommander.ArchitectureTests') {
+            dotnet restore $p | Out-Null
+            $out = dotnet list $p package --vulnerable --include-transitive 2>&1 | Out-String
+            $out
+            if ($out -match '(?m)\b(High|Critical)\b') { $failed = $true }
+          }
+          if ($failed) { throw 'Є залежності з High/Critical вразливостями' }
+
+  # Секрети в історії репозиторію.
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Кросплатформність: компіляція застосунку на Linux (smoke). З кроку G3 тут же збирається й тестується Core.
+  linux-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Compile WPF app with EnableWindowsTargeting
+        run: dotnet build FileManager.csproj -c Release -p:EnableWindowsTargeting=true
+      - name: Build + test Core
+        if: hashFiles('src/ByteCommander.Core/*.csproj') != ''
+        run: |
+          dotnet build src/ByteCommander.Core -c Release
+          dotnet test tests/ByteCommander.Core.Tests -c Release --filter "os!=windows"
