@@ -1,0 +1,47 @@
+# Baseline архітектурного боргу v0.3.0 @ bb3ae2c, виміряно 21.11.2026 статичним розбором коду.
+# Записи можна лише ВИДАЛЯТИ (коли борг виправлено). Рядки AR-04..AR-06 звірено з architecture-baseline.actual.txt
+# прогону ArchUnitNET 0.13.5 (21.11.2026); кожен прогін CI пише свіжий actual-файл як артефакт.
+
+# AR-04: UI-типи з прямим доступом до файлової системи
+AR-04 | ByteCommander.App
+AR-04 | ByteCommander.MainWindow
+AR-04 | ByteCommander.Util
+AR-04 | ByteCommander.SearchWindow
+AR-04 | ByteCommander.ViewerWindow
+AR-04 | ByteCommander.Controls.FilePanel
+AR-04 | ByteCommander.Compare.FolderCompareWindow
+AR-04 | ByteCommander.Compare.FolderRow
+AR-04 | ByteCommander.Compare.TextCompareWindow
+AR-04 | ByteCommander.Compare.TextCompareWindow+Side
+
+# AR-05: сервіси, що залежать від вікон
+AR-05 | ByteCommander.Services.OperationRunner
+
+# AR-06: залежність від конкретного MainWindow поза composition root
+AR-06 | ByteCommander.SearchWindow
+
+# AR-10: стелі розміру файлів (рядків); ціль — < 400
+AR-10 | Compare/TextCompareWindow.xaml.cs | 424
+AR-10 | Controls/FilePanel.xaml.cs | 1067
+AR-10 | Dialogs/ViewerWindow.cs | 575
+AR-10 | MainWindow.xaml.cs | 925
+AR-10 | Services/FileOperation.cs | 562
+AR-10 | Viewer/RowSources.cs | 602
+
+# AR-11: статичний mutable-стан
+AR-11 | Controls/FilePanel.xaml.cs#ShowHidden
+AR-11 | Controls/FilePanel.xaml.cs#dragSource
+AR-11 | Services/ThemeManager.cs#Current
+AR-11 | Services/ThemeManager.cs#IsDark
+AR-11 | Services/ThemeManager.cs#Changed
+
+# AR-12: порожні catch (кількість у файлі)
+AR-12 | Compare/FolderCompareWindow.xaml.cs | 1
+AR-12 | Dialogs/SearchWindow.cs | 1
+AR-12 | MainWindow.xaml.cs | 2
+AR-12 | Services/FileOperation.cs | 3
+AR-12 | Util.cs | 1
+AR-12 | Viewer/RowSources.cs | 1
+
+# Примітка: Services/ShellIcons.cs#Cache — static readonly Dictionary без синхронізації (mutable вміст);
+# регулярний вираз AR-11 його не ловить, борг ведеться в реєстрі AV-07.
