@@ -1,0 +1,7 @@
+N:System.Windows;Core не залежить від WPF (ADR-13, ADR-15)
+N:Microsoft.Win32;Core не залежить від Windows API (ADR-15)
+T:System.Runtime.InteropServices.DllImportAttribute;P/Invoke — лише в Platform/Windows застосунку
+T:System.Runtime.InteropServices.LibraryImportAttribute;P/Invoke — лише в Platform/Windows застосунку
+T:System.Diagnostics.Process;Запуск процесів — порт IShellLauncher
+M:System.Threading.Tasks.Task.Wait;Без sync-over-async (ADR-16)
+P:System.Threading.Tasks.Task`1.Result;Без sync-over-async (ADR-16)

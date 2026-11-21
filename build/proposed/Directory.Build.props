@@ -1,0 +1,24 @@
+<!-- ПРОЄКТ (PROPOSED). Спільні налаштування для всіх проєктів. -->
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <!-- Аналізатори: рівень вибрано після першого прогону в режимі report; посилення — через .editorconfig по правилах. -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Аудит вразливостей NuGet під час restore, включно з транзитивними. -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>moderate</NuGetAuditLevel>
+    <WarningsAsErrors>$(WarningsAsErrors);NU1903;NU1904</WarningsAsErrors> <!-- high, critical -->
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- Core: заборонені API (WPF, Win32, Process) — блокуюче з моменту створення проєкту. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'ByteCommander.Core'">
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="5.6.0" PrivateAssets="all" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)build/BannedSymbols.Core.txt" />
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

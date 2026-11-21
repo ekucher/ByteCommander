@@ -1,0 +1,14 @@
+# ПРОЄКТ (PROPOSED). Фрагмент .editorconfig: правила, що вмикаються як error поступово (по одному PR на групу).
+root = true
+[*.cs]
+indent_style = space
+indent_size = 4
+charset = utf-8
+dotnet_sort_system_directives_first = true
+
+# Крок 1 (G0): лише звіт — severity за AnalysisLevel.
+# Крок 2 (після baseline): правила, що вже мають 0 порушень, переводяться в error одразу, щоб не з'являлися нові:
+# dotnet_diagnostic.CA2016.severity = error   # передавати CancellationToken
+# dotnet_diagnostic.CA1416.severity = error   # платформна сумісність (важливо для Core)
+# dotnet_diagnostic.VSTHRD100.severity = error # async void (якщо підключено VS Threading analyzers)
+# Крок 3: правила з ненульовим baseline — error після того, як baseline для них дійшов до 0.
